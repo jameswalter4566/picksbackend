@@ -22,8 +22,8 @@ Environment variables (set in Railway)
 - ANKR_API_KEY (optional): if set and BSC_MAINNET_RPC is empty, the app uses `https://rpc.ankr.com/bsc/<ANKR_API_KEY>`
 - DEPLOYER_PK: EOA private key (0x…) with a small amount of BNB for gas
 - BSCSCAN_API_KEY (optional): for contract verification
-- RESOLVER: address allowed to call resolve() on markets
-- FEE_RECIPIENT: treasury/resolver fee recipient
+- RESOLVER (optional): owner/resolver address. Defaults to deployer address if unset.
+- FEE_RECIPIENT (optional): fee recipient address. Defaults to deployer address if unset.
 - ESCROW_ASSET: mainnet ERC‑20 used for staking (e.g., WBNB/FDUSD/USDT)
 - FEE_BPS: fee in basis points (e.g., 300 for 3%)
 - FACTORY_ADDR (optional): existing Factory address to create markets from
@@ -40,7 +40,8 @@ Create a market via existing Factory
 - npx hardhat run scripts/create-market.js --network bscMainnet
 
 Run scripts on Railway
-- Set secrets: BSC_MAINNET_RPC (or ANKR_API_KEY), DEPLOYER_PK, RESOLVER, FEE_RECIPIENT, ESCROW_ASSET, FEE_BPS, (optional) FACTORY_ADDR, BSCSCAN_API_KEY
+- Set secrets: BSC_MAINNET_RPC (or ANKR_API_KEY), DEPLOYER_PK, ESCROW_ASSET, FEE_BPS, (optional) RESOLVER, FEE_RECIPIENT, FACTORY_ADDR, BSCSCAN_API_KEY
+- If RESOLVER/FEE_RECIPIENT are omitted, scripts will use the deployer address derived from DEPLOYER_PK.
 - Exec into the running service and run a script, for example:
   - `npx hardhat run scripts/deploy-market.js --network bscMainnet`
   - or `npx hardhat run scripts/create-market.js --network bscMainnet`
