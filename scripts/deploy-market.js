@@ -1,8 +1,8 @@
 const { ethers } = require("hardhat");
 
 async function main() {
-  const DEFAULT_ASSET = '0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'; // WBNB (BSC mainnet)
-  const asset        = process.env.ESCROW_ASSET || DEFAULT_ASSET;
+  const DEFAULT_ASSET = '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c'; // WBNB (BSC mainnet, lowercased)
+  const asset        = (process.env.ESCROW_ASSET || DEFAULT_ASSET).toLowerCase();
   const feeBps       = Number(process.env.FEE_BPS || '300');
   if (!asset) throw new Error('Missing ESCROW_ASSET');
 
