@@ -1,0 +1,17 @@
+{
+  "name": "picksbackend-evm",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "deploy:market:mainnet": "hardhat run scripts/deploy-market.js --network bscMainnet",
+    "create:market:mainnet": "hardhat run scripts/create-market.js --network bscMainnet"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@openzeppelin/contracts": "^5.0.0",
+    "dotenv": "^16.4.5",
+    "hardhat": "^2.22.8"
+  }
+}
+

@@ -1,0 +1,40 @@
+BNB Prediction Market — Backend Deploy Toolkit
+
+This repository contains a minimal Hardhat setup to deploy the per‑pick prediction market contracts to BNB Smart Chain mainnet and to create new markets (one per pick) for your backend running on Railway.
+
+What’s included
+- contracts/prediction/
+  - OutcomeShare.sol: Non‑transferable receipt token (YES/NO shares)
+  - PredictionMarket.sol: Per‑pick market vault with buy/resolve/claim
+- scripts/
+  - deploy-market.js: Deploy a single market directly (no factory)
+  - create-market.js: Call an existing Factory’s createMarket to deploy a market
+- hardhat.config.js: Hardhat config with bscMainnet
+- package.json: Commands to compile and run scripts
+
+Environment variables (set in Railway)
+- BSC_MAINNET_RPC: BNB mainnet RPC URL
+- DEPLOYER_PK: EOA private key (0x…) with a small amount of BNB for gas
+- BSCSCAN_API_KEY (optional): for contract verification
+- RESOLVER: address allowed to call resolve() on markets
+- FEE_RECIPIENT: treasury/resolver fee recipient
+- ESCROW_ASSET: mainnet ERC‑20 used for staking (e.g., WBNB/FDUSD/USDT)
+- FEE_BPS: fee in basis points (e.g., 300 for 3%)
+- FACTORY_ADDR (optional): existing Factory address to create markets from
+
+Install & compile
+- npm i
+- npx hardhat compile
+
+Deploy a standalone market (no factory)
+- npx hardhat run scripts/deploy-market.js --network bscMainnet
+
+Create a market via existing Factory
+- Ensure FACTORY_ADDR is set in Railway secrets
+- npx hardhat run scripts/create-market.js --network bscMainnet
+
+Security notes
+- Never commit secrets. Use Railway secrets for all env vars.
+- Double‑check ESCROW_ASSET is the mainnet token address.
+- Keep DEPLOYER_PK minimal and funded with small BNB.
+
