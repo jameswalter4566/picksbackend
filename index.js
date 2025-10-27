@@ -112,13 +112,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Show admin dashboard
-    const rpc = process.env.BSC_MAINNET_RPC ? 'BSC_MAINNET_RPC' : (process.env.ANKR_API_KEY ? 'ANKR_API_KEY' : '—');
+    const rpc = process.env.ANKR_API_KEY ? 'ANKR_API_KEY' : (process.env.BSC_MAINNET_RPC ? 'BSC_MAINNET_RPC' : '—');
+    const DEFAULT_ASSET = '0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c';
+    const effectiveAsset = process.env.ESCROW_ASSET || `${DEFAULT_ASSET} (default WBNB)`;
     const details = [
       ['RPC source', rpc],
       ['DEPLOYER_PK present', process.env.DEPLOYER_PK ? 'yes' : 'no'],
       ['RESOLVER (effective)', process.env.RESOLVER ? mask(process.env.RESOLVER) : 'defaults to deployer'],
       ['FEE_RECIPIENT (effective)', process.env.FEE_RECIPIENT ? mask(process.env.FEE_RECIPIENT) : 'defaults to deployer'],
-      ['ESCROW_ASSET', mask(process.env.ESCROW_ASSET)],
+      ['ESCROW_ASSET (effective)', mask(effectiveAsset)],
       ['FEE_BPS', String(process.env.FEE_BPS || 300)],
       ['FACTORY_ADDR', mask(process.env.FACTORY_ADDR)],
       ['Time', new Date().toISOString()],
@@ -181,9 +183,8 @@ const server = http.createServer(async (req, res) => {
     }
     // Validate required env
     const missing = [];
-    if (!(process.env.BSC_MAINNET_RPC || process.env.ANKR_API_KEY)) missing.push('BSC_MAINNET_RPC or ANKR_API_KEY');
+    if (!(process.env.ANKR_API_KEY || process.env.BSC_MAINNET_RPC)) missing.push('ANKR_API_KEY');
     if (!process.env.DEPLOYER_PK) missing.push('DEPLOYER_PK');
-    if (!process.env.ESCROW_ASSET) missing.push('ESCROW_ASSET');
     if (missing.length) {
       res.writeHead(400, { 'Content-Type': 'text/html' });
       res.end(

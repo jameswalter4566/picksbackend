@@ -1,7 +1,8 @@
 const { ethers } = require("hardhat");
 
 async function main() {
-  const asset        = process.env.ESCROW_ASSET;
+  const DEFAULT_ASSET = '0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'; // WBNB (BSC mainnet)
+  const asset        = process.env.ESCROW_ASSET || DEFAULT_ASSET;
   const feeBps       = Number(process.env.FEE_BPS || '300');
   if (!asset) throw new Error('Missing ESCROW_ASSET');
 
@@ -18,7 +19,7 @@ async function main() {
   console.log('Deployer:', deployerAddr);
   console.log('Owner/Resolver:', owner);
   console.log('Fee recipient:', feeRecipient);
-  console.log('Asset:', asset);
+  console.log('Asset:', asset, asset === DEFAULT_ASSET ? '(default WBNB)' : '');
   console.log('Fee bps:', feeBps);
 
   const Market = await ethers.getContractFactory('PredictionMarket');

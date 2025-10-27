@@ -7,7 +7,8 @@ const FACTORY_ABI = [
 
 async function main() {
   const factoryAddr  = process.env.FACTORY_ADDR;
-  const asset        = process.env.ESCROW_ASSET;
+  const DEFAULT_ASSET = '0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c'; // WBNB (BSC mainnet)
+  const asset        = process.env.ESCROW_ASSET || DEFAULT_ASSET;
   const feeBps       = Number(process.env.FEE_BPS || '300');
   if (!factoryAddr || !asset) throw new Error('Missing FACTORY_ADDR/ESCROW_ASSET');
 
@@ -23,7 +24,7 @@ async function main() {
   console.log('Deployer:', deployerAddr);
   console.log('Owner/Resolver:', owner);
   console.log('Fee recipient:', feeRecipient);
-  console.log('Asset:', asset);
+  console.log('Asset:', asset, asset === DEFAULT_ASSET ? '(default WBNB)' : '');
   console.log('Fee bps:', feeBps);
   const factory  = new ethers.Contract(factoryAddr, FACTORY_ABI, signer);
   const tx = await factory.createMarket(owner, asset, endTime, cutoffTime, feeBps, feeRecipient, namePrefix);

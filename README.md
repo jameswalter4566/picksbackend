@@ -23,14 +23,13 @@ Admin page
 - The page shows configured details (without exposing secrets) and a "Launch Program" button that deploys a test market via Hardhat and prints the transaction logs/addresses.
 
 Environment variables (set in Railway)
-- BSC_MAINNET_RPC: BNB mainnet RPC URL
-- ANKR_API_KEY (optional): if set and BSC_MAINNET_RPC is empty, the app uses `https://rpc.ankr.com/bsc/<ANKR_API_KEY>`
+- ANKR_API_KEY: required; RPC is `https://rpc.ankr.com/bsc/<ANKR_API_KEY>`
 - DEPLOYER_PK: EOA private key (0x…) with a small amount of BNB for gas
 - BSCSCAN_API_KEY (optional): for contract verification
 - RESOLVER (optional): owner/resolver address. Defaults to deployer address if unset.
 - FEE_RECIPIENT (optional): fee recipient address. Defaults to deployer address if unset.
-- ESCROW_ASSET: mainnet ERC‑20 used for staking (e.g., WBNB/FDUSD/USDT)
-- FEE_BPS: fee in basis points (e.g., 300 for 3%)
+- ESCROW_ASSET (optional): mainnet ERC‑20 used for staking; defaults to WBNB 0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c if unset
+- FEE_BPS (optional): fee in basis points; defaults to 300 (3%)
 - FACTORY_ADDR (optional): existing Factory address to create markets from
 
 Install & compile
@@ -45,8 +44,9 @@ Create a market via existing Factory
 - npx hardhat run scripts/create-market.js --network bscMainnet
 
 Run scripts on Railway
-- Set secrets: BSC_MAINNET_RPC (or ANKR_API_KEY), DEPLOYER_PK, ESCROW_ASSET, FEE_BPS, (optional) RESOLVER, FEE_RECIPIENT, FACTORY_ADDR, BSCSCAN_API_KEY
-- If RESOLVER/FEE_RECIPIENT are omitted, scripts will use the deployer address derived from DEPLOYER_PK.
+- Set secrets: ANKR_API_KEY, DEPLOYER_PK, (optional) ESCROW_ASSET, FEE_BPS, RESOLVER, FEE_RECIPIENT, FACTORY_ADDR, BSCSCAN_API_KEY
+- If RESOLVER/FEE_RECIPIENT are omitted, scripts use the deployer address derived from DEPLOYER_PK.
+- If ESCROW_ASSET is omitted, scripts default to WBNB.
 - Exec into the running service and run a script, for example:
   - `npx hardhat run scripts/deploy-market.js --network bscMainnet`
   - or `npx hardhat run scripts/create-market.js --network bscMainnet`
