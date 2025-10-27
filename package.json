@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "start": "node index.js",
     "compile": "hardhat compile",
     "deploy:market:mainnet": "hardhat run scripts/deploy-market.js --network bscMainnet",
     "create:market:mainnet": "hardhat run scripts/create-market.js --network bscMainnet"
@@ -14,4 +15,3 @@
     "hardhat": "^2.22.8"
   }
 }
-

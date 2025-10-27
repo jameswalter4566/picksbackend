@@ -12,6 +12,11 @@ What’s included
 - hardhat.config.js: Hardhat config with bscMainnet
 - package.json: Commands to compile and run scripts
 
+Service start command (Railway/Railpack)
+- This repo includes a minimal `index.js` HTTP server and a `start` script so Railpack detects a start command.
+- The server only exposes `/health` and a JSON status at `/` and listens on `PORT` (defaults to 3000).
+- Use this service as a toolbox: exec into it and run the Hardhat scripts with env vars set.
+
 Environment variables (set in Railway)
 - BSC_MAINNET_RPC: BNB mainnet RPC URL
 - DEPLOYER_PK: EOA private key (0x…) with a small amount of BNB for gas
@@ -33,8 +38,13 @@ Create a market via existing Factory
 - Ensure FACTORY_ADDR is set in Railway secrets
 - npx hardhat run scripts/create-market.js --network bscMainnet
 
+Run scripts on Railway
+- Set secrets: BSC_MAINNET_RPC, DEPLOYER_PK, RESOLVER, FEE_RECIPIENT, ESCROW_ASSET, FEE_BPS, (optional) FACTORY_ADDR, BSCSCAN_API_KEY
+- Exec into the running service and run a script, for example:
+  - `npx hardhat run scripts/deploy-market.js --network bscMainnet`
+  - or `npx hardhat run scripts/create-market.js --network bscMainnet`
+
 Security notes
 - Never commit secrets. Use Railway secrets for all env vars.
 - Double‑check ESCROW_ASSET is the mainnet token address.
 - Keep DEPLOYER_PK minimal and funded with small BNB.
-
