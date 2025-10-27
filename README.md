@@ -19,6 +19,7 @@ Service start command (Railway/Railpack)
 
 Environment variables (set in Railway)
 - BSC_MAINNET_RPC: BNB mainnet RPC URL
+- ANKR_API_KEY (optional): if set and BSC_MAINNET_RPC is empty, the app uses `https://rpc.ankr.com/bsc/<ANKR_API_KEY>`
 - DEPLOYER_PK: EOA private key (0x…) with a small amount of BNB for gas
 - BSCSCAN_API_KEY (optional): for contract verification
 - RESOLVER: address allowed to call resolve() on markets
@@ -39,7 +40,7 @@ Create a market via existing Factory
 - npx hardhat run scripts/create-market.js --network bscMainnet
 
 Run scripts on Railway
-- Set secrets: BSC_MAINNET_RPC, DEPLOYER_PK, RESOLVER, FEE_RECIPIENT, ESCROW_ASSET, FEE_BPS, (optional) FACTORY_ADDR, BSCSCAN_API_KEY
+- Set secrets: BSC_MAINNET_RPC (or ANKR_API_KEY), DEPLOYER_PK, RESOLVER, FEE_RECIPIENT, ESCROW_ASSET, FEE_BPS, (optional) FACTORY_ADDR, BSCSCAN_API_KEY
 - Exec into the running service and run a script, for example:
   - `npx hardhat run scripts/deploy-market.js --network bscMainnet`
   - or `npx hardhat run scripts/create-market.js --network bscMainnet`
