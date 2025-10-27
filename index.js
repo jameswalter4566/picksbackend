@@ -332,9 +332,13 @@ const server = http.createServer(async (req, res) => {
 
           // Update Supabase if configured
           try {
-            if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+            const overrideUrl = (body.supabaseUrl || '').toString().trim();
+            const overrideKey = (body.serviceRoleKey || '').toString().trim();
+            const supabaseUrl = overrideUrl || process.env.SUPABASE_URL;
+            const supabaseKey = overrideKey || process.env.SUPABASE_SERVICE_ROLE_KEY;
+            if (supabaseUrl && supabaseKey) {
               const { createClient } = await import('@supabase/supabase-js');
-              const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+              const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false, autoRefreshToken: false } });
               await supabase.from('picks').update({
                 evm_market_address: json.marketAddress,
                 evm_yes_token_address: json.yesShareAddress,
@@ -345,6 +349,10 @@ const server = http.createServer(async (req, res) => {
                 evm_end_time: new Date(Number(json.endTime) * 1000).toISOString(),
                 evm_cutoff_time: new Date(Number(json.cutoffTime) * 1000).toISOString(),
               }).eq('id', pickId);
+              json.dbUpdate = 'ok';
+            } else {
+              json.dbUpdate = 'skipped';
+              json.dbError = 'missing SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY and no overrides provided';
             }
           } catch (e) {
             // still return success with a warning
