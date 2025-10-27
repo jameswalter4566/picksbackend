@@ -38,10 +38,11 @@ contract PredictionMarket is Ownable, ReentrancyGuard {
         uint16 _feeBps,
         address _feeRecipient,
         string memory namePrefix
-    ) {
+    )
+        Ownable(_owner)
+    {
         require(_endTime > block.timestamp, "end in past");
         require(_cutoffTime < _endTime, "cutoff >= end");
-        _transferOwnership(_owner);
         asset = IERC20(_asset);
         endTime = _endTime;
         cutoffTime = _cutoffTime;
@@ -108,4 +109,3 @@ contract PredictionMarket is Ownable, ReentrancyGuard {
         return (vaultYes, vaultNo, yesShare.totalSupply(), noShare.totalSupply());
     }
 }
-

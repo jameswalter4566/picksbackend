@@ -8,9 +8,9 @@ contract OutcomeShare is ERC20, Ownable {
     error NonTransferable();
 
     constructor(string memory name_, string memory symbol_, address owner_)
-        ERC20(name_, symbol_) {
-        _transferOwnership(owner_);
-    }
+        ERC20(name_, symbol_)
+        Ownable(owner_)
+    {}
 
     function mint(address to, uint256 amt) external onlyOwner { _mint(to, amt); }
     function burn(address from, uint256 amt) external onlyOwner { _burn(from, amt); }
@@ -22,4 +22,3 @@ contract OutcomeShare is ERC20, Ownable {
     }
     function approve(address, uint256) public pure override returns (bool) { revert NonTransferable(); }
 }
-
