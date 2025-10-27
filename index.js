@@ -274,6 +274,108 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // JSON API: launch EVM market for a pick and update Supabase
+  if (parsed.pathname === '/api/launch-evm-market' && req.method === 'POST') {
+    try {
+      const apiKey = req.headers['x-api-key'] || req.headers['x-admin-key'];
+      if (!process.env.admin_api_key || apiKey !== process.env.admin_api_key) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      const bodyRaw = await collectBody(req);
+      let body = {};
+      try { body = JSON.parse(bodyRaw || '{}'); } catch {}
+      const pickId = (body.pickId || '').toString().trim();
+      const namePrefix = (body.name || body.namePrefix || '').toString().trim();
+      if (!pickId || !namePrefix) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'pickId and name are required' }));
+        return;
+      }
+
+      const nowSec = Math.floor(Date.now()/1000);
+      let endTime = Number.isFinite(Number(body.endTime)) ? Number(body.endTime) : (nowSec + 3*24*3600);
+      let cutoffTime = Number.isFinite(Number(body.cutoffTime)) ? Number(body.cutoffTime) : Math.max(nowSec + 300, endTime - 30*60);
+
+      // Optionally use Supabase to fetch pick.expires_at/duration_sec if env is present
+      try {
+        if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+          const { createClient } = await import('@supabase/supabase-js');
+          const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+          const { data: pick } = await supabase.from('picks').select('expires_at, duration_sec').eq('id', pickId).maybeSingle();
+          if (pick) {
+            const exp = pick.expires_at;
+            if (exp) {
+              const t = Math.floor(new Date(exp).getTime() / 1000);
+              if (Number.isFinite(t) && t > nowSec) endTime = t;
+            } else if (pick.duration_sec && Number(pick.duration_sec) > 0) {
+              endTime = nowSec + Number(pick.duration_sec);
+            }
+            cutoffTime = Math.max(nowSec + 300, endTime - 30*60);
+          }
+        }
+      } catch (e) {
+        // non-fatal; continue with computed times
+      }
+
+      const env = { ...process.env, OUTPUT_JSON: '1', NAME_PREFIX: namePrefix, END_TIME: String(endTime), CUTOFF_TIME: String(cutoffTime) };
+      if (Number.isFinite(Number(body.feeBps))) env.FEE_BPS = String(Number(body.feeBps));
+      if (body.asset) env.ESCROW_ASSET = String(body.asset);
+
+      const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
+        cwd: __dirname,
+        env,
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d.toString()));
+      child.stderr.on('data', (d) => (out += d.toString()));
+      child.on('close', async (code) => {
+        try {
+          const jsonStart = out.lastIndexOf('{');
+          const json = JSON.parse(out.slice(jsonStart));
+          if (code !== 0 || !json?.success) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'deploy_failed', output: out.slice(-4000) }));
+            return;
+          }
+
+          // Update Supabase if configured
+          try {
+            if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+              const { createClient } = await import('@supabase/supabase-js');
+              const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+              await supabase.from('picks').update({
+                evm_market_address: json.marketAddress,
+                evm_yes_token_address: json.yesShareAddress,
+                evm_no_token_address: json.noShareAddress,
+                evm_chain: 'bsc-mainnet',
+                evm_asset_address: json.asset,
+                evm_fee_bps: json.feeBps,
+                evm_end_time: new Date(Number(json.endTime) * 1000).toISOString(),
+                evm_cutoff_time: new Date(Number(json.cutoffTime) * 1000).toISOString(),
+              }).eq('id', pickId);
+            }
+          } catch (e) {
+            // still return success with a warning
+            json.dbUpdate = 'failed';
+            json.dbError = (e?.message) || String(e);
+          }
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ...json, pickId }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'parse_error', code, output: out.slice(-4000) }));
+        }
+      });
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: e?.message || String(e) }));
+    }
+    return;
+  }
+
   // Default JSON status
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(

@@ -2,6 +2,9 @@
   "name": "picksbackend-evm",
   "version": "0.1.0",
   "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.0"
+  },
   "scripts": {
     "start": "node index.js",
     "compile": "hardhat compile",
