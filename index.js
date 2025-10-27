@@ -227,12 +227,7 @@ const server = http.createServer(async (req, res) => {
   // JSON API: deploy a market (admin API key required)
   if (parsed.pathname === '/api/deploy-market' && req.method === 'POST') {
     try {
-      const apiKey = req.headers['x-api-key'] || req.headers['x-admin-key'];
-      if (!process.env.admin_api_key || apiKey !== process.env.admin_api_key) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'unauthorized' }));
-        return;
-      }
+      // No admin API key required per request
       const bodyRaw = await collectBody(req);
       let body = {};
       try { body = JSON.parse(bodyRaw || '{}'); } catch {}
@@ -277,12 +272,7 @@ const server = http.createServer(async (req, res) => {
   // JSON API: launch EVM market for a pick and update Supabase
   if (parsed.pathname === '/api/launch-evm-market' && req.method === 'POST') {
     try {
-      const apiKey = req.headers['x-api-key'] || req.headers['x-admin-key'];
-      if (!process.env.admin_api_key || apiKey !== process.env.admin_api_key) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'unauthorized' }));
-        return;
-      }
+      // No admin API key required per request
       const bodyRaw = await collectBody(req);
       let body = {};
       try { body = JSON.parse(bodyRaw || '{}'); } catch {}
