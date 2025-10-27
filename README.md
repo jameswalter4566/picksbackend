@@ -17,6 +17,11 @@ Service start command (Railway/Railpack)
 - The server only exposes `/health` and a JSON status at `/` and listens on `PORT` (defaults to 3000).
 - Use this service as a toolbox: exec into it and run the Hardhat scripts with env vars set.
 
+Admin page
+- Route: `GET /mein/arbeit`
+- Protect with Railway secret `password_pin` (required). You sign in with the PIN and can launch a test market (vault) from the page.
+- The page shows configured details (without exposing secrets) and a "Launch Program" button that deploys a test market via Hardhat and prints the transaction logs/addresses.
+
 Environment variables (set in Railway)
 - BSC_MAINNET_RPC: BNB mainnet RPC URL
 - ANKR_API_KEY (optional): if set and BSC_MAINNET_RPC is empty, the app uses `https://rpc.ankr.com/bsc/<ANKR_API_KEY>`
