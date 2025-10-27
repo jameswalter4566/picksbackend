@@ -224,6 +224,56 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // JSON API: deploy a market (admin API key required)
+  if (parsed.pathname === '/api/deploy-market' && req.method === 'POST') {
+    try {
+      const apiKey = req.headers['x-api-key'] || req.headers['x-admin-key'];
+      if (!process.env.admin_api_key || apiKey !== process.env.admin_api_key) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unauthorized' }));
+        return;
+      }
+      const bodyRaw = await collectBody(req);
+      let body = {};
+      try { body = JSON.parse(bodyRaw || '{}'); } catch {}
+      const namePrefix = (body.namePrefix || 'Example Pick').toString();
+      const feeBps = body.feeBps && Number.isFinite(Number(body.feeBps)) ? String(Number(body.feeBps)) : undefined;
+      const asset = body.asset ? String(body.asset) : undefined;
+      // endTime/cutoffTime are seconds
+      const endTime = body.endTime && Number.isFinite(Number(body.endTime)) ? String(Number(body.endTime)) : undefined;
+      const cutoffTime = body.cutoffTime && Number.isFinite(Number(body.cutoffTime)) ? String(Number(body.cutoffTime)) : undefined;
+
+      const env = { ...process.env, OUTPUT_JSON: '1', NAME_PREFIX: namePrefix };
+      if (feeBps) env.FEE_BPS = feeBps;
+      if (asset) env.ESCROW_ASSET = asset;
+      if (endTime) env.END_TIME = endTime;
+      if (cutoffTime) env.CUTOFF_TIME = cutoffTime;
+
+      const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
+        cwd: __dirname,
+        env,
+      });
+      let out = '';
+      child.stdout.on('data', (d) => (out += d.toString()));
+      child.stderr.on('data', (d) => (out += d.toString()));
+      child.on('close', (code) => {
+        try {
+          const jsonStart = out.lastIndexOf('{');
+          const json = JSON.parse(out.slice(jsonStart));
+          res.writeHead(code === 0 ? 200 : 500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(json));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, error: 'parse_error', code, output: out.slice(-4000) }));
+        }
+      });
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: e?.message || String(e) }));
+    }
+    return;
+  }
+
   // Default JSON status
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(

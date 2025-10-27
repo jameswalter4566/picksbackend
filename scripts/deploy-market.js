@@ -12,9 +12,11 @@ async function main() {
   const feeRecipient = process.env.FEE_RECIPIENT || deployerAddr;
 
   const now = Math.floor(Date.now()/1000);
-  const endTime    = BigInt(now + 3*24*3600);
-  const cutoffTime = BigInt(now + 3*24*3600 - 30*60);
-  const namePrefix = 'Example Pick';
+  const envEnd   = process.env.END_TIME ? BigInt(process.env.END_TIME) : null;
+  const envCut   = process.env.CUTOFF_TIME ? BigInt(process.env.CUTOFF_TIME) : null;
+  const endTime    = envEnd ?? BigInt(now + 3*24*3600);
+  const cutoffTime = envCut ?? BigInt(Number(endTime) - 30*60);
+  const namePrefix = process.env.NAME_PREFIX || 'Example Pick';
 
   console.log('Deployer:', deployerAddr);
   console.log('Owner/Resolver:', owner);
@@ -26,9 +28,30 @@ async function main() {
   const market = await Market.deploy(owner, asset, endTime, cutoffTime, feeBps, feeRecipient, namePrefix);
   await market.waitForDeployment();
   const addr = await market.getAddress();
-  console.log('Market:', addr);
-  console.log('YesShare:', await market.yesShare());
-  console.log('NoShare:', await market.noShare());
+  const yes = await market.yesShare();
+  const no = await market.noShare();
+
+  if (process.env.OUTPUT_JSON === '1') {
+    const out = {
+      success: true,
+      deployer: deployerAddr,
+      owner,
+      feeRecipient,
+      asset,
+      feeBps,
+      endTime: Number(endTime),
+      cutoffTime: Number(cutoffTime),
+      namePrefix,
+      marketAddress: addr,
+      yesShareAddress: yes,
+      noShareAddress: no,
+    };
+    console.log(JSON.stringify(out));
+  } else {
+    console.log('Market:', addr);
+    console.log('YesShare:', yes);
+    console.log('NoShare:', no);
+  }
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
