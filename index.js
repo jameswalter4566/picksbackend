@@ -62,6 +62,20 @@ async function collectBody(req) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const origin = req.headers.origin || '';
+  // Simple permissive CORS to allow SPA admin page cross-origin with cookies
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Headers', 'content-type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  }
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   const parsed = url.parse(req.url, true);
   if (parsed.pathname === '/health' || parsed.pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -139,7 +153,7 @@ const server = http.createServer(async (req, res) => {
     if (ok) {
       const token = sessionToken();
       res.writeHead(303, {
-        'Set-Cookie': `admin_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${7 * 24 * 3600}`,
+        'Set-Cookie': `admin_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${7 * 24 * 3600}`,
         Location: '/mein/arbeit',
       });
       res.end();
@@ -152,7 +166,7 @@ const server = http.createServer(async (req, res) => {
 
   if (parsed.pathname === '/mein/arbeit/logout') {
     res.writeHead(303, {
-      'Set-Cookie': 'admin_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0',
+      'Set-Cookie': 'admin_session=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0',
       Location: '/mein/arbeit',
     });
     res.end();
