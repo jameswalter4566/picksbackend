@@ -224,12 +224,14 @@ const server = http.createServer(async (req, res) => {
       const secret = process.env.AUTH_JWT_SECRET || process.env.password_pin || 'solpicks-dev-secret';
       const { SignJWT } = await import('jose');
       const encoder = new TextEncoder();
+      const key = encoder.encode(secret);
       const expiresInSeconds = 3 * 24 * 60 * 60;
       const token = await new SignJWT({ address })
+        .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
         .setSubject(address)
         .setIssuedAt()
         .setExpirationTime(Math.floor(Date.now() / 1000) + expiresInSeconds)
-        .sign(encoder.encode(secret));
+        .sign(key);
       const expiresAt = new Date(Date.now() + expiresInSeconds * 1000).toISOString();
       sendJson(res, 200, { token, address, expiresAt });
     } catch (err) {
