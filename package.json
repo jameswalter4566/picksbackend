@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
-    "@supabase/supabase-js": "^2.57.0"
+    "@supabase/supabase-js": "^2.57.0",
+    "@metamask/eth-sig-util": "^8.2.0",
+    "jose": "^6.1.0"
   },
   "scripts": {
     "start": "node index.js",

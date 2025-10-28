@@ -8,6 +8,7 @@ const url = require('url');
 const qs = require('querystring');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
+const { createClient } = require('@supabase/supabase-js');
 
 const port = process.env.PORT || 3000;
 
@@ -24,6 +25,94 @@ function parseCookies(req) {
 function sessionToken() {
   const pin = process.env.password_pin || '';
   return crypto.createHash('sha256').update(`${pin}|v1`).digest('hex');
+}
+
+function headerLookup(headers = {}, key) {
+  if (!headers) return undefined;
+  if (headers[key] != null) return headers[key];
+  const lowerKey = key.toLowerCase();
+  for (const [k, value] of Object.entries(headers)) {
+    if (k.toLowerCase() === lowerKey) return value;
+  }
+  return undefined;
+}
+
+function normalizeAddress(address) {
+  if (typeof address !== 'string') return null;
+  const trimmed = address.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(trimmed)) return null;
+  return trimmed.toLowerCase();
+}
+
+function issueNonce() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function buildMessage(address, nonce, issuedAt) {
+  const lines = ['SolPicks Sign-in', `Address: ${address}`, `Nonce: ${nonce}`];
+  if (issuedAt) lines.push(`Issued At: ${issuedAt}`);
+  return lines.join('\n');
+}
+
+function devFallbackAllowed() {
+  const explicit = process.env.AUTH_ALLOW_DEV_FALLBACK;
+  if (explicit === 'true') return true;
+  if (explicit === 'false') return false;
+  const context = process.env.CONTEXT;
+  if (context && context.toLowerCase() === 'production') return false;
+  if (process.env.RAILWAY_ENVIRONMENT && process.env.RAILWAY_ENVIRONMENT.toLowerCase() === 'production') return false;
+  if (process.env.NETLIFY_DEV === 'true') return true;
+  if (process.env.NODE_ENV && process.env.NODE_ENV !== 'production') return true;
+  return false;
+}
+
+async function verifyJwtToken(token) {
+  const secret = process.env.AUTH_JWT_SECRET;
+  if (!secret) throw new Error('AUTH_JWT_SECRET not configured');
+  const { jwtVerify } = await import('jose');
+  const encoder = new TextEncoder();
+  const verified = await jwtVerify(token, encoder.encode(secret));
+  const payload = verified?.payload || {};
+  const address = normalizeAddress(payload?.sub || payload?.address);
+  if (!address) throw new Error('Invalid token payload');
+  return { address, payload };
+}
+
+async function requireAuth(req) {
+  const authHeader = headerLookup(req.headers, 'authorization');
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    if (!token) return { error: 'Missing token' };
+    try {
+      const decoded = await verifyJwtToken(token);
+      return { address: decoded.address, tokenPayload: decoded.payload };
+    } catch (err) {
+      return { error: err?.message || 'Invalid token' };
+    }
+  }
+
+  if (devFallbackAllowed()) {
+    const devHeader = headerLookup(req.headers, 'x-wallet-address');
+    const fromQuery = req.url && new URL(req.url, `http://${req.headers.host}`).searchParams.get('wallet');
+    const candidate = normalizeAddress(devHeader || fromQuery);
+    if (candidate) {
+      return { address: candidate, dev: true };
+    }
+  }
+
+  return { error: 'Not authenticated' };
+}
+
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload ?? {}));
+}
+
+function getSupabaseAdmin() {
+  const url = process.env.SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !serviceKey) throw new Error('Missing Supabase env (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)');
+  return createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
 function isAuthed(req) {
@@ -68,7 +157,7 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Headers', 'content-type');
+    res.setHeader('Access-Control-Allow-Headers', 'content-type,authorization,x-wallet-address');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   }
   if (req.method === 'OPTIONS') {
@@ -80,6 +169,137 @@ const server = http.createServer(async (req, res) => {
   if (parsed.pathname === '/health' || parsed.pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('ok');
+    return;
+  }
+
+  // Auth endpoints for MetaMask sign-in
+  if (parsed.pathname === '/auth-nonce') {
+    if (req.method !== 'GET') {
+      sendJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    const address = normalizeAddress(parsed.query?.address || parsed.query?.wallet);
+    if (!address) {
+      sendJson(res, 400, { error: 'Missing or invalid address' });
+      return;
+    }
+    const nonce = issueNonce();
+    const issuedAt = new Date().toISOString();
+    sendJson(res, 200, { address, nonce, issuedAt });
+    return;
+  }
+
+  if (parsed.pathname === '/auth-verify') {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { error: 'Method not allowed' });
+      return;
+    }
+    try {
+      const bodyRaw = await collectBody(req);
+      let body = {};
+      try { body = JSON.parse(bodyRaw || '{}'); } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return; }
+      const address = normalizeAddress(body?.address);
+      const nonce = typeof body?.nonce === 'string' ? body.nonce : '';
+      const signature = typeof body?.signature === 'string' ? body.signature : '';
+      const issuedAt = typeof body?.issuedAt === 'string' ? body.issuedAt : undefined;
+      if (!address || !nonce || !signature) {
+        sendJson(res, 400, { error: 'Missing address, nonce, or signature' });
+        return;
+      }
+      const { recoverPersonalSignature } = require('@metamask/eth-sig-util');
+      let recovered;
+      try {
+        recovered = normalizeAddress(recoverPersonalSignature({
+          data: `0x${Buffer.from(buildMessage(address, nonce, issuedAt), 'utf8').toString('hex')}`,
+          signature,
+        }));
+      } catch (err) {
+        console.error('[auth-verify] signature verification failed', err);
+        sendJson(res, 401, { error: 'Signature verification failed' });
+        return;
+      }
+      if (!recovered || recovered !== address) {
+        sendJson(res, 401, { error: 'Signature mismatch' });
+        return;
+      }
+      const secret = process.env.AUTH_JWT_SECRET;
+      if (!secret) {
+        sendJson(res, 500, { error: 'AUTH_JWT_SECRET not configured' });
+        return;
+      }
+      const { SignJWT } = await import('jose');
+      const encoder = new TextEncoder();
+      const expiresInSeconds = 3 * 24 * 60 * 60;
+      const token = await new SignJWT({ address })
+        .setSubject(address)
+        .setIssuedAt()
+        .setExpirationTime(Math.floor(Date.now() / 1000) + expiresInSeconds)
+        .sign(encoder.encode(secret));
+      const expiresAt = new Date(Date.now() + expiresInSeconds * 1000).toISOString();
+      sendJson(res, 200, { token, address, expiresAt });
+    } catch (err) {
+      console.error('[auth-verify] error', err);
+      sendJson(res, 500, { error: err?.message || 'Auth verification error' });
+    }
+    return;
+  }
+
+  if (parsed.pathname === '/user') {
+    try {
+      const auth = await requireAuth(req);
+      if (auth?.error) {
+        sendJson(res, 401, { error: auth.error });
+        return;
+      }
+      const supabase = getSupabaseAdmin();
+      if (req.method === 'GET') {
+        const payload = { wallet: auth.address };
+        const { data, error } = await supabase
+          .from('users')
+          .upsert(payload, { onConflict: 'wallet' })
+          .select('*')
+          .maybeSingle();
+        if (error) throw error;
+        sendJson(res, 200, { success: true, profile: data });
+        return;
+      }
+      if (req.method === 'POST') {
+        const bodyRaw = await collectBody(req);
+        let body = {};
+        try { body = JSON.parse(bodyRaw || '{}'); } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return; }
+        const updates = {};
+        if (typeof body.username === 'string') updates.username = body.username;
+        if (typeof body.display_name === 'string' && !updates.username) updates.username = body.display_name;
+        if (typeof body.avatar_url === 'string') updates.avatar_url = body.avatar_url;
+        if (typeof body.bio === 'string') updates.bio = body.bio;
+        if (typeof body.website === 'string') updates.website = body.website;
+        if (typeof body.twitter === 'string') updates.twitter = body.twitter;
+        if (typeof body.banner_url === 'string') updates.banner_url = body.banner_url;
+        if (typeof body.theme_color === 'string') updates.theme_color = body.theme_color;
+        if (typeof body.hide_balance === 'boolean') updates.hide_balance = body.hide_balance;
+        if (typeof body.wallet_address === 'string') updates.wallet_address = body.wallet_address;
+        if (typeof body.wallet === 'string') updates.wallet = body.wallet;
+
+        if (Object.keys(updates).length === 0) {
+          sendJson(res, 400, { error: 'No updatable fields provided' });
+          return;
+        }
+
+        const base = { wallet: auth.address, ...updates };
+        const { data, error } = await supabase
+          .from('users')
+          .upsert(base, { onConflict: 'wallet' })
+          .select('*')
+          .maybeSingle();
+        if (error) throw error;
+        sendJson(res, 200, { success: true, profile: data });
+        return;
+      }
+      sendJson(res, 405, { error: 'Method not allowed' });
+    } catch (err) {
+      console.error('[user] error', err);
+      sendJson(res, 500, { error: err?.message || 'Server error' });
+    }
     return;
   }
 
