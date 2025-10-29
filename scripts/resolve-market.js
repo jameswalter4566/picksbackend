@@ -55,7 +55,30 @@ async function main() {
     return;
   }
 
-  const tx = await market.resolve(outcome);
+  const forceFlagRaw = process.env.RESOLVE_FORCE || '';
+  const forceFlag = typeof forceFlagRaw === 'string'
+    ? ['1', 'true', 'yes', 'force'].includes(forceFlagRaw.toLowerCase())
+    : false;
+
+  let tx;
+  let forced = false;
+  if (forceFlag) {
+    try {
+      tx = await market.forceResolve(outcome);
+      forced = true;
+    } catch (err) {
+      const errMsg = err?.error?.message || err?.message || '';
+      if (/selector was not recognized|function does not exist|function selector was not recognized/i.test(errMsg)) {
+        throw Object.assign(new Error('forceResolve not supported by market'), { code: 'UNSUPPORTED_FORCE', cause: err });
+      }
+      throw err;
+    }
+  }
+
+  if (!tx) {
+    tx = await market.resolve(outcome);
+  }
+
   const receipt = await tx.wait();
 
   console.log(
@@ -67,6 +90,7 @@ async function main() {
       outcomeName: outcomeName(outcome),
       txHash: receipt.hash,
       blockNumber: receipt.blockNumber ?? null,
+      forced,
     })
   );
 }
@@ -78,8 +102,12 @@ main().catch((err) => {
     success: false,
     error: message,
   };
-  if (detail) payload.detail = detail;
   if (err?.code) payload.code = err.code;
+  if (err?.code === 'UNSUPPORTED_FORCE') {
+    payload.detail = 'forceResolve_not_available_on_contract';
+  } else if (detail) {
+    payload.detail = detail;
+  }
   if (err?.reason) payload.reason = err.reason;
   console.error(JSON.stringify(payload));
   process.exit(1);

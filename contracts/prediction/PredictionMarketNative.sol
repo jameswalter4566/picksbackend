@@ -25,6 +25,7 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
 
     event Bought(address indexed user, bool isYes, uint256 amountIn, uint256 sharesMinted, uint256 fee);
     event Resolved(Outcome outcome);
+    event ForceResolved(Outcome outcome);
     event Claimed(address indexed user, uint256 burnedShares, uint256 paidOut);
 
     constructor(
@@ -81,13 +82,26 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
     }
 
     function resolve(Outcome outcome) external onlyOwner {
+        _resolve(outcome, false);
+    }
+
+    function forceResolve(Outcome outcome) external onlyOwner {
+        _resolve(outcome, true);
+    }
+
+    function _resolve(Outcome outcome, bool force) internal {
         require(finalOutcome == Outcome.Pending, "done");
-        require(block.timestamp >= endTime, "not ended");
+        if (!force) {
+            require(block.timestamp >= endTime, "not ended");
+        }
         require(
             outcome == Outcome.Yes || outcome == Outcome.No || outcome == Outcome.Invalid,
             "bad"
         );
         finalOutcome = outcome;
+        if (force) {
+            emit ForceResolved(outcome);
+        }
         emit Resolved(outcome);
     }
 

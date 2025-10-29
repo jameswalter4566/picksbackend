@@ -503,30 +503,65 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const nowSec = Math.floor(Date.now()/1000);
-      let endTime = Number.isFinite(Number(body.endTime)) ? Number(body.endTime) : (nowSec + 3*24*3600);
-      let cutoffTime = Number.isFinite(Number(body.cutoffTime)) ? Number(body.cutoffTime) : Math.max(nowSec + 300, endTime - 30*60);
+      const overrideUrl = (body.supabaseUrl || '').toString().trim();
+      const overrideKey = (body.serviceRoleKey || '').toString().trim();
+      const supabaseUrl = overrideUrl || process.env.SUPABASE_URL;
+      const supabaseKey = overrideKey || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-      // Optionally use Supabase to fetch pick.expires_at/duration_sec if env is present
-      try {
-        if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const explicitEnd = Number(body.endTime);
+      const explicitCutoff = Number(body.cutoffTime);
+      const bodyDuration = Number(body.durationSec);
+      const bodyExpiresAt = body.expiresAt ? Math.floor(new Date(body.expiresAt).getTime() / 1000) : NaN;
+
+      let endTime = Number.isFinite(explicitEnd) ? explicitEnd : NaN;
+      if (!Number.isFinite(endTime) || endTime <= nowSec) {
+        if (Number.isFinite(bodyExpiresAt) && bodyExpiresAt > nowSec) {
+          endTime = bodyExpiresAt;
+        } else if (Number.isFinite(bodyDuration) && bodyDuration > 0) {
+          endTime = nowSec + Math.floor(bodyDuration);
+        }
+      }
+
+      // Optionally use Supabase to fetch pick.expires_at/duration_sec if still unset
+      if ((!Number.isFinite(endTime) || endTime <= nowSec) && supabaseUrl && supabaseKey) {
+        try {
           const { createClient } = await import('@supabase/supabase-js');
-          const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+          const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false, autoRefreshToken: false } });
           const { data: pick } = await supabase.from('picks').select('expires_at, duration_sec').eq('id', pickId).maybeSingle();
           if (pick) {
-            const exp = pick.expires_at;
-            if (exp) {
-              const t = Math.floor(new Date(exp).getTime() / 1000);
-              if (Number.isFinite(t) && t > nowSec) endTime = t;
-            } else if (pick.duration_sec && Number(pick.duration_sec) > 0) {
+            const exp = pick.expires_at ? Math.floor(new Date(pick.expires_at).getTime() / 1000) : NaN;
+            if (Number.isFinite(exp) && exp > nowSec) {
+              endTime = exp;
+            } else if (Number.isFinite(Number(pick.duration_sec)) && Number(pick.duration_sec) > 0) {
               endTime = nowSec + Number(pick.duration_sec);
             }
-            cutoffTime = Math.max(nowSec + 300, endTime - 30*60);
           }
+        } catch (e) {
+          // non-fatal
         }
-      } catch (e) {
-        // non-fatal; continue with computed times
       }
+
+      if (!Number.isFinite(endTime) || endTime <= nowSec) {
+        endTime = nowSec + 3 * 24 * 3600;
+      }
+
+      let cutoffTime = Number.isFinite(explicitCutoff) ? explicitCutoff : NaN;
+      if (!Number.isFinite(cutoffTime) || cutoffTime >= endTime || cutoffTime <= nowSec) {
+        const approxDuration = Number.isFinite(bodyDuration) && bodyDuration > 0
+          ? bodyDuration
+          : Math.max(endTime - nowSec, 60);
+        const buffer = Math.max(5, Math.min(60, Math.floor(approxDuration / 10) || 5));
+        let candidate = endTime - buffer;
+        if (candidate <= nowSec) {
+          candidate = endTime - Math.max(1, Math.min(buffer, 5));
+        }
+        if (candidate <= nowSec) {
+          candidate = nowSec + Math.min(30, Math.max(1, Math.floor((endTime - nowSec) / 2)));
+        }
+        cutoffTime = Math.min(candidate, endTime - 1);
+      }
+      cutoffTime = Math.max(nowSec + 1, Math.min(cutoffTime, endTime - 1));
 
       const env = { ...process.env, OUTPUT_JSON: '1', NAME_PREFIX: namePrefix, END_TIME: String(endTime), CUTOFF_TIME: String(cutoffTime) };
       if (Number.isFinite(Number(body.feeBps))) env.FEE_BPS = String(Number(body.feeBps));
@@ -553,10 +588,6 @@ const server = http.createServer(async (req, res) => {
 
           // Update Supabase if configured
           try {
-            const overrideUrl = (body.supabaseUrl || '').toString().trim();
-            const overrideKey = (body.serviceRoleKey || '').toString().trim();
-            const supabaseUrl = overrideUrl || process.env.SUPABASE_URL;
-            const supabaseKey = overrideKey || process.env.SUPABASE_SERVICE_ROLE_KEY;
             if (supabaseUrl && supabaseKey) {
               const { createClient } = await import('@supabase/supabase-js');
               const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false, autoRefreshToken: false } });
@@ -618,6 +649,10 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 500, { error: 'Missing DEPLOYER_PK secret' });
         return;
       }
+      const forceToken = body.force;
+      const shouldForce = forceToken == null
+        ? true
+        : !['0', 'false', 'no'].includes(String(forceToken).toLowerCase().trim());
       const env = {
         ...process.env,
         OUTPUT_JSON: '1',
@@ -625,6 +660,7 @@ const server = http.createServer(async (req, res) => {
         RESOLVE_RESULT: resultRaw,
       };
       if (pickId) env.PICK_ID = pickId;
+      if (shouldForce) env.RESOLVE_FORCE = '1';
       const child = spawn('npx', ['hardhat', 'run', 'scripts/resolve-market.js', '--network', 'bscMainnet'], {
         cwd: __dirname,
         env,
