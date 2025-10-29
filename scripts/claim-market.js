@@ -49,6 +49,64 @@ async function main() {
     throw new Error('market not resolved');
   }
 
+  const yesShareAddr = normalizeAddress(await market.yesShare());
+  const noShareAddr = normalizeAddress(await market.noShare());
+  const yesShare = yesShareAddr ? await ethers.getContractAt('OutcomeShare', yesShareAddr, signer) : null;
+  const noShare = noShareAddr ? await ethers.getContractAt('OutcomeShare', noShareAddr, signer) : null;
+
+  const yesBalance = yesShare ? await yesShare.balanceOf(claimWallet) : 0n;
+  const noBalance = noShare ? await noShare.balanceOf(claimWallet) : 0n;
+
+  if (outcome === 1) {
+    if (!yesBalance || yesBalance === 0n) {
+      console.log(
+        JSON.stringify({
+          success: false,
+          code: 'NO_WINNING_SHARES',
+          detail: 'Wallet holds zero YES shares',
+          yesShareBalanceWei: yesBalance?.toString?.() || '0',
+          noShareBalanceWei: noBalance?.toString?.() || '0',
+          marketAddress,
+          wallet: claimWallet,
+          outcome,
+        })
+      );
+      process.exit(1);
+    }
+  } else if (outcome === 2) {
+    if (!noBalance || noBalance === 0n) {
+      console.log(
+        JSON.stringify({
+          success: false,
+          code: 'NO_WINNING_SHARES',
+          detail: 'Wallet holds zero NO shares',
+          yesShareBalanceWei: yesBalance?.toString?.() || '0',
+          noShareBalanceWei: noBalance?.toString?.() || '0',
+          marketAddress,
+          wallet: claimWallet,
+          outcome,
+        })
+      );
+      process.exit(1);
+    }
+  } else if (outcome === 3) {
+    if ((!yesBalance || yesBalance === 0n) && (!noBalance || noBalance === 0n)) {
+      console.log(
+        JSON.stringify({
+          success: false,
+          code: 'NO_SHARES_INVALID',
+          detail: 'Wallet holds zero YES/NO shares',
+          yesShareBalanceWei: yesBalance?.toString?.() || '0',
+          noShareBalanceWei: noBalance?.toString?.() || '0',
+          marketAddress,
+          wallet: claimWallet,
+          outcome,
+        })
+      );
+      process.exit(1);
+    }
+  }
+
   let usedClaimFor = false;
   let tx;
 
@@ -59,7 +117,16 @@ async function main() {
     } catch (err) {
       const errMsg = err?.error?.message || err?.message || '';
       if (/selector was not recognized|function does not exist|function selector was not recognized/i.test(errMsg)) {
-        throw Object.assign(new Error('claimFor not supported by market'), { code: 'UNSUPPORTED_CLAIM_FOR', cause: err });
+        console.log(
+          JSON.stringify({
+            success: false,
+            code: 'UNSUPPORTED_CLAIM_FOR',
+            detail: 'claimFor not supported by market bytecode',
+            marketAddress,
+            wallet: claimWallet,
+          })
+        );
+        process.exit(1);
       }
       throw err;
     }
@@ -84,6 +151,10 @@ async function main() {
       burnedSharesWei: burnedShares,
       paidOutWei,
       paidOut,
+      yesShareBalanceWei: yesBalance?.toString?.() || '0',
+      noShareBalanceWei: noBalance?.toString?.() || '0',
+      yesShare: yesShareAddr,
+      noShare: noShareAddr,
     })
   );
 }
