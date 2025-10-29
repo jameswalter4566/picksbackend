@@ -457,8 +457,8 @@ const server = http.createServer(async (req, res) => {
 
       const env = { ...process.env, OUTPUT_JSON: '1', NAME_PREFIX: namePrefix };
       if (feeBps) env.FEE_BPS = feeBps;
-      if (asset) env.ESCROW_ASSET = asset;
-      if ((body.marketType || '').toString().toLowerCase() === 'native_bnb') env.MARKET_NATIVE = '1';
+      env.MARKET_NATIVE = '1';
+      env.ESCROW_ASSET = 'native';
       if (endTime) env.END_TIME = endTime;
       if (cutoffTime) env.CUTOFF_TIME = cutoffTime;
 
@@ -530,8 +530,8 @@ const server = http.createServer(async (req, res) => {
 
       const env = { ...process.env, OUTPUT_JSON: '1', NAME_PREFIX: namePrefix, END_TIME: String(endTime), CUTOFF_TIME: String(cutoffTime) };
       if (Number.isFinite(Number(body.feeBps))) env.FEE_BPS = String(Number(body.feeBps));
-      if (body.asset) env.ESCROW_ASSET = String(body.asset);
-      if ((body.marketType || '').toString().toLowerCase() === 'native_bnb') env.MARKET_NATIVE = '1';
+      env.MARKET_NATIVE = '1';
+      env.ESCROW_ASSET = 'native';
 
       const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
         cwd: __dirname,

@@ -1,12 +1,12 @@
 const { ethers } = require("hardhat");
 
 async function main() {
-  const DEFAULT_ASSET = '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c'; // WBNB (BSC mainnet, lowercased)
   const requestedAsset = process.env.ESCROW_ASSET ? process.env.ESCROW_ASSET.toLowerCase() : undefined;
-  const useNative = process.env.MARKET_NATIVE === '1' || requestedAsset === 'native' || requestedAsset === 'bnb';
-  const asset        = useNative ? 'native' : (requestedAsset || DEFAULT_ASSET);
-  const feeBps       = Number(process.env.FEE_BPS || '300');
-  if (!asset) throw new Error('Missing ESCROW_ASSET');
+  if (requestedAsset && requestedAsset !== 'native' && requestedAsset !== 'bnb') {
+    throw new Error('Only native BNB markets are supported. Remove ESCROW_ASSET or set it to "native".');
+  }
+  const asset = 'native';
+  const feeBps = Number(process.env.FEE_BPS || '300');
 
   const [signer] = await ethers.getSigners();
   const deployerAddr = await signer.getAddress();
@@ -23,14 +23,11 @@ async function main() {
   console.log('Deployer:', deployerAddr);
   console.log('Owner/Resolver:', owner);
   console.log('Fee recipient:', feeRecipient);
-  console.log('Asset:', asset, useNative ? '(native BNB)' : (asset === DEFAULT_ASSET ? '(default WBNB)' : ''));
+  console.log('Asset:', asset, '(native BNB)');
   console.log('Fee bps:', feeBps);
 
-  const contractName = useNative ? 'PredictionMarketNative' : 'PredictionMarket';
-  const Market = await ethers.getContractFactory(contractName);
-  const market = useNative
-    ? await Market.deploy(owner, endTime, cutoffTime, feeBps, feeRecipient, namePrefix)
-    : await Market.deploy(owner, asset, endTime, cutoffTime, feeBps, feeRecipient, namePrefix);
+  const Market = await ethers.getContractFactory('PredictionMarketNative');
+  const market = await Market.deploy(owner, endTime, cutoffTime, feeBps, feeRecipient, namePrefix);
   await market.waitForDeployment();
   const addr = await market.getAddress();
   const yes = await market.yesShare();
@@ -42,8 +39,8 @@ async function main() {
       deployer: deployerAddr,
       owner,
       feeRecipient,
-      asset: useNative ? 'native' : asset,
-      marketType: useNative ? 'native_bnb' : 'erc20',
+      asset,
+      marketType: 'native_bnb',
       feeBps,
       endTime: Number(endTime),
       cutoffTime: Number(cutoffTime),
