@@ -95,28 +95,37 @@ contract PredictionMarket is Ownable, ReentrancyGuard {
     }
 
     function claim() external nonReentrant {
+        _claim(msg.sender);
+    }
+
+    function claimFor(address user) external onlyOwner nonReentrant {
+        require(user != address(0), "bad user");
+        _claim(user);
+    }
+
+    function _claim(address user) internal {
         require(finalOutcome != Outcome.Pending, "not resolved");
         if (finalOutcome == Outcome.Invalid) {
-            uint256 a = yesShare.balanceOf(msg.sender);
-            uint256 b = noShare.balanceOf(msg.sender);
+            uint256 a = yesShare.balanceOf(user);
+            uint256 b = noShare.balanceOf(user);
             uint256 refund = a + b;
-            if (a > 0) yesShare.burn(msg.sender, a);
-            if (b > 0) noShare.burn(msg.sender, b);
-            if (refund > 0) asset.safeTransfer(msg.sender, refund);
-            emit Claimed(msg.sender, a + b, refund);
+            if (a > 0) yesShare.burn(user, a);
+            if (b > 0) noShare.burn(user, b);
+            if (refund > 0) asset.safeTransfer(user, refund);
+            emit Claimed(user, a + b, refund);
             return;
         }
         bool yesWon = (finalOutcome == Outcome.Yes);
         OutcomeShare winShare  = yesWon ? yesShare : noShare;
         uint256 winVault  = yesWon ? vaultYes : vaultNo;
         uint256 loseVault = yesWon ? vaultNo  : vaultYes;
-        uint256 userShares = winShare.balanceOf(msg.sender);
+        uint256 userShares = winShare.balanceOf(user);
         require(userShares > 0, "no shares");
         uint256 totalWin = winShare.totalSupply();
-        winShare.burn(msg.sender, userShares);
+        winShare.burn(user, userShares);
         uint256 payout = ((winVault + loseVault) * userShares) / totalWin;
-        asset.safeTransfer(msg.sender, payout);
-        emit Claimed(msg.sender, userShares, payout);
+        asset.safeTransfer(user, payout);
+        emit Claimed(user, userShares, payout);
     }
 
     function getTotals() external view returns (uint256 _vaultYes, uint256 _vaultNo, uint256 _sYes, uint256 _sNo) {

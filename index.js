@@ -699,6 +699,69 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (parsed.pathname === '/api/claim-market' && req.method === 'POST') {
+    try {
+      const bodyRaw = await collectBody(req);
+      let body = {};
+      try { body = JSON.parse(bodyRaw || '{}'); } catch { sendJson(res, 400, { error: 'Invalid JSON' }); return; }
+      const pickId = (body.pickId || body.id || '').toString().trim();
+      const marketAddress = normalizeAddress(body.marketAddress || body.address);
+      const walletAddress = normalizeAddress(body.wallet || body.walletAddress || body.user);
+      if (!marketAddress) { sendJson(res, 400, { error: 'marketAddress required' }); return; }
+      if (!walletAddress) { sendJson(res, 400, { error: 'wallet required' }); return; }
+      if (!(process.env.ANKR_API_KEY || process.env.BSC_MAINNET_RPC)) {
+        sendJson(res, 500, { error: 'Missing RPC secret (ANKR_API_KEY or BSC_MAINNET_RPC)' });
+        return;
+      }
+      if (!process.env.DEPLOYER_PK) {
+        sendJson(res, 500, { error: 'Missing DEPLOYER_PK secret' });
+        return;
+      }
+      const env = {
+        ...process.env,
+        OUTPUT_JSON: '1',
+        MARKET_ADDRESS: marketAddress,
+        CLAIM_WALLET: walletAddress,
+      };
+      if (pickId) env.PICK_ID = pickId;
+      const child = spawn('npx', ['hardhat', 'run', 'scripts/claim-market.js', '--network', 'bscMainnet'], {
+        cwd: __dirname,
+        env,
+      });
+      let out = '';
+      let responded = false;
+      const finish = (statusCode, payload) => {
+        if (responded) return;
+        responded = true;
+        sendJson(res, statusCode, payload);
+      };
+      child.stdout.on('data', (d) => (out += d.toString()));
+      child.stderr.on('data', (d) => (out += d.toString()));
+      child.on('error', (err) => {
+        finish(500, { success: false, error: err?.message || 'Failed to start claim script' });
+      });
+      child.on('close', (code) => {
+        try {
+          const brace = out.lastIndexOf('{');
+          if (brace === -1) {
+            throw new Error(out ? out.trim().slice(-4000) : 'No output');
+          }
+          const json = JSON.parse(out.slice(brace));
+          if (code === 0 && json?.success) {
+            finish(200, { ...json, pickId });
+          } else {
+            finish(500, { success: false, code, pickId, output: json });
+          }
+        } catch (e) {
+          finish(500, { success: false, code, pickId, error: e?.message || 'parse_error', output: out.slice(-4000) });
+        }
+      });
+    } catch (e) {
+      sendJson(res, 500, { success: false, error: e?.message || 'claim_market_error' });
+    }
+    return;
+  }
+
   // Default JSON status
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(
