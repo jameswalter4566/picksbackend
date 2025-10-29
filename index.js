@@ -458,6 +458,7 @@ const server = http.createServer(async (req, res) => {
       const env = { ...process.env, OUTPUT_JSON: '1', NAME_PREFIX: namePrefix };
       if (feeBps) env.FEE_BPS = feeBps;
       if (asset) env.ESCROW_ASSET = asset;
+      if ((body.marketType || '').toString().toLowerCase() === 'native_bnb') env.MARKET_NATIVE = '1';
       if (endTime) env.END_TIME = endTime;
       if (cutoffTime) env.CUTOFF_TIME = cutoffTime;
 
@@ -472,6 +473,7 @@ const server = http.createServer(async (req, res) => {
         try {
           const jsonStart = out.lastIndexOf('{');
           const json = JSON.parse(out.slice(jsonStart));
+          json.marketType = json.marketType || (json.asset === 'native' ? 'native_bnb' : 'erc20');
           res.writeHead(code === 0 ? 200 : 500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(json));
         } catch (e) {
@@ -529,6 +531,7 @@ const server = http.createServer(async (req, res) => {
       const env = { ...process.env, OUTPUT_JSON: '1', NAME_PREFIX: namePrefix, END_TIME: String(endTime), CUTOFF_TIME: String(cutoffTime) };
       if (Number.isFinite(Number(body.feeBps))) env.FEE_BPS = String(Number(body.feeBps));
       if (body.asset) env.ESCROW_ASSET = String(body.asset);
+      if ((body.marketType || '').toString().toLowerCase() === 'native_bnb') env.MARKET_NATIVE = '1';
 
       const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
         cwd: __dirname,
@@ -541,6 +544,7 @@ const server = http.createServer(async (req, res) => {
         try {
           const jsonStart = out.lastIndexOf('{');
           const json = JSON.parse(out.slice(jsonStart));
+          json.marketType = json.marketType || (json.asset === 'native' ? 'native_bnb' : 'erc20');
           if (code !== 0 || !json?.success) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, error: 'deploy_failed', output: out.slice(-4000) }));
@@ -562,6 +566,7 @@ const server = http.createServer(async (req, res) => {
                 evm_no_token_address: json.noShareAddress,
                 evm_chain: 'bsc-mainnet',
                 evm_asset_address: json.asset,
+                evm_market_type: json.marketType,
                 evm_fee_bps: json.feeBps,
                 evm_end_time: new Date(Number(json.endTime) * 1000).toISOString(),
                 evm_cutoff_time: new Date(Number(json.cutoffTime) * 1000).toISOString(),
