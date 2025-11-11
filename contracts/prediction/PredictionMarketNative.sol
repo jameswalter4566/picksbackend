@@ -14,6 +14,8 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
     uint64 public immutable cutoffTime;
     uint16 public feeBps;
     address public feeRecipient;
+    address public creatorFeeRecipient;
+    uint16 public creatorFeeSplitBps;
 
     uint256 public vaultYes;
     uint256 public vaultNo;
@@ -34,6 +36,8 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
         uint64 _cutoffTime,
         uint16 _feeBps,
         address _feeRecipient,
+        address _creatorFeeRecipient,
+        uint16 _creatorFeeSplitBps,
         string memory namePrefix
     ) Ownable(_owner) {
         require(_endTime > block.timestamp, "end in past");
@@ -42,6 +46,11 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
         cutoffTime = _cutoffTime;
         feeBps = _feeBps;
         feeRecipient = _feeRecipient;
+        require(_creatorFeeSplitBps <= 10_000, "split too large");
+        if (_creatorFeeRecipient != address(0) && _creatorFeeSplitBps > 0) {
+            creatorFeeRecipient = _creatorFeeRecipient;
+            creatorFeeSplitBps = _creatorFeeSplitBps;
+        }
 
         yesShare = new OutcomeShare(
             string(abi.encodePacked(namePrefix, " Yes Share")),
@@ -68,7 +77,17 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
 
         uint256 fee = (amount * feeBps) / 10_000;
         uint256 net = amount - fee;
-        if (fee > 0) _sendValue(feeRecipient, fee);
+        if (fee > 0) {
+            if (creatorFeeRecipient != address(0) && creatorFeeSplitBps > 0) {
+                uint256 creatorCut = (fee * creatorFeeSplitBps) / 10_000;
+                if (creatorCut > fee) creatorCut = fee;
+                uint256 platformCut = fee - creatorCut;
+                if (creatorCut > 0) _sendValue(creatorFeeRecipient, creatorCut);
+                if (platformCut > 0) _sendValue(feeRecipient, platformCut);
+            } else {
+                _sendValue(feeRecipient, fee);
+            }
+        }
 
         if (isYes) {
             vaultYes += net;

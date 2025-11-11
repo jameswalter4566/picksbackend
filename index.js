@@ -461,6 +461,14 @@ const server = http.createServer(async (req, res) => {
       env.ESCROW_ASSET = 'native';
       if (endTime) env.END_TIME = endTime;
       if (cutoffTime) env.CUTOFF_TIME = cutoffTime;
+      const bodyCreator = normalizeAddress(body.creatorFeeRecipient || body.creator_wallet || body.creatorWallet);
+      const defaultCreatorSplit = Number(process.env.DEFAULT_CREATOR_FEE_SPLIT_BPS || '0');
+      const bodySplit = Number(body.creatorFeeSplitBps);
+      const creatorSplit = Number.isFinite(bodySplit) ? bodySplit : defaultCreatorSplit;
+      if (bodyCreator && creatorSplit > 0) {
+        env.CREATOR_FEE_RECIPIENT = bodyCreator;
+        env.CREATOR_FEE_SPLIT_BPS = String(Math.max(0, Math.min(10_000, creatorSplit)));
+      }
 
       const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
         cwd: __dirname,
@@ -507,6 +515,11 @@ const server = http.createServer(async (req, res) => {
       const overrideKey = (body.serviceRoleKey || '').toString().trim();
       const supabaseUrl = overrideUrl || process.env.SUPABASE_URL;
       const supabaseKey = overrideKey || process.env.SUPABASE_SERVICE_ROLE_KEY;
+      let creatorWallet = normalizeAddress(body.creatorFeeRecipient || body.creatorWallet || body.creator_wallet);
+      const defaultCreatorSplit = Number(process.env.DEFAULT_CREATOR_FEE_SPLIT_BPS || '0');
+      let creatorSplitBps = Number(body.creatorFeeSplitBps);
+      if (!Number.isFinite(creatorSplitBps)) creatorSplitBps = defaultCreatorSplit;
+      let pickMeta = null;
 
       const nowSec = Math.floor(Date.now() / 1000);
       const explicitEnd = Number(body.endTime);
@@ -524,17 +537,26 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Optionally use Supabase to fetch pick.expires_at/duration_sec if still unset
-      if ((!Number.isFinite(endTime) || endTime <= nowSec) && supabaseUrl && supabaseKey) {
+      if (((!Number.isFinite(endTime) || endTime <= nowSec) || !creatorWallet || !Number.isFinite(creatorSplitBps) || creatorSplitBps <= 0) && supabaseUrl && supabaseKey) {
         try {
           const { createClient } = await import('@supabase/supabase-js');
           const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false, autoRefreshToken: false } });
-          const { data: pick } = await supabase.from('picks').select('expires_at, duration_sec').eq('id', pickId).maybeSingle();
+          const { data: pick } = await supabase.from('picks').select('expires_at, duration_sec, creator_wallet, creator_fee_recipient, creator_fee_split_bps').eq('id', pickId).maybeSingle();
           if (pick) {
+            pickMeta = pick;
             const exp = pick.expires_at ? Math.floor(new Date(pick.expires_at).getTime() / 1000) : NaN;
             if (Number.isFinite(exp) && exp > nowSec) {
               endTime = exp;
             } else if (Number.isFinite(Number(pick.duration_sec)) && Number(pick.duration_sec) > 0) {
               endTime = nowSec + Number(pick.duration_sec);
+            }
+            if (!creatorWallet) {
+              const supaCreator = normalizeAddress(pick.creator_fee_recipient || pick.creator_wallet);
+              if (supaCreator) creatorWallet = supaCreator;
+            }
+            if ((!Number.isFinite(creatorSplitBps) || creatorSplitBps <= 0) && Number.isFinite(Number(pick.creator_fee_split_bps))) {
+              const supaSplit = Number(pick.creator_fee_split_bps);
+              if (Number.isFinite(supaSplit) && supaSplit > 0) creatorSplitBps = supaSplit;
             }
           }
         } catch (e) {
@@ -567,6 +589,12 @@ const server = http.createServer(async (req, res) => {
       if (Number.isFinite(Number(body.feeBps))) env.FEE_BPS = String(Number(body.feeBps));
       env.MARKET_NATIVE = '1';
       env.ESCROW_ASSET = 'native';
+      const finalCreatorSplit = Number.isFinite(creatorSplitBps) ? Math.max(0, Math.min(10_000, creatorSplitBps)) : 0;
+      const finalCreatorWallet = creatorWallet && finalCreatorSplit > 0 ? creatorWallet : null;
+      if (finalCreatorWallet) {
+        env.CREATOR_FEE_RECIPIENT = finalCreatorWallet;
+        env.CREATOR_FEE_SPLIT_BPS = String(finalCreatorSplit);
+      }
 
       const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
         cwd: __dirname,
@@ -591,7 +619,7 @@ const server = http.createServer(async (req, res) => {
             if (supabaseUrl && supabaseKey) {
               const { createClient } = await import('@supabase/supabase-js');
               const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false, autoRefreshToken: false } });
-              await supabase.from('picks').update({
+              const updatePayload = {
                 evm_market_address: json.marketAddress,
                 evm_yes_token_address: json.yesShareAddress,
                 evm_no_token_address: json.noShareAddress,
@@ -601,7 +629,16 @@ const server = http.createServer(async (req, res) => {
                 evm_fee_bps: json.feeBps,
                 evm_end_time: new Date(Number(json.endTime) * 1000).toISOString(),
                 evm_cutoff_time: new Date(Number(json.cutoffTime) * 1000).toISOString(),
-              }).eq('id', pickId);
+              };
+              if (finalCreatorWallet) {
+                updatePayload.evm_creator_fee_recipient = finalCreatorWallet;
+                updatePayload.evm_creator_fee_split_bps = finalCreatorSplit;
+                if (!pickMeta?.creator_fee_recipient) updatePayload.creator_fee_recipient = finalCreatorWallet;
+                if (!Number.isFinite(Number(pickMeta?.creator_fee_split_bps)) || Number(pickMeta?.creator_fee_split_bps) <= 0) {
+                  updatePayload.creator_fee_split_bps = finalCreatorSplit;
+                }
+              }
+              await supabase.from('picks').update(updatePayload).eq('id', pickId);
               json.dbUpdate = 'ok';
             } else {
               json.dbUpdate = 'skipped';

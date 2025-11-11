@@ -7,6 +7,14 @@ async function main() {
   }
   const asset = 'native';
   const feeBps = Number(process.env.FEE_BPS || '300');
+  const creatorFeeRecipientRaw = process.env.CREATOR_FEE_RECIPIENT || '';
+  const creatorFeeSplitBpsRaw = Number(process.env.CREATOR_FEE_SPLIT_BPS || '0');
+  const creatorFeeRecipient = creatorFeeRecipientRaw && creatorFeeRecipientRaw.trim()
+    ? creatorFeeRecipientRaw.trim()
+    : ethers.ZeroAddress;
+  const creatorFeeSplitBps = Number.isFinite(creatorFeeSplitBpsRaw)
+    ? Math.max(0, Math.min(10_000, creatorFeeSplitBpsRaw))
+    : 0;
 
   const [signer] = await ethers.getSigners();
   const deployerAddr = await signer.getAddress();
@@ -25,9 +33,20 @@ async function main() {
   console.log('Fee recipient:', feeRecipient);
   console.log('Asset:', asset, '(native BNB)');
   console.log('Fee bps:', feeBps);
+  console.log('Creator fee recipient:', creatorFeeRecipient === ethers.ZeroAddress ? '(none)' : creatorFeeRecipient);
+  console.log('Creator fee split bps:', creatorFeeSplitBps);
 
   const Market = await ethers.getContractFactory('PredictionMarketNative');
-  const market = await Market.deploy(owner, endTime, cutoffTime, feeBps, feeRecipient, namePrefix);
+  const market = await Market.deploy(
+    owner,
+    endTime,
+    cutoffTime,
+    feeBps,
+    feeRecipient,
+    creatorFeeRecipient,
+    creatorFeeSplitBps,
+    namePrefix
+  );
   await market.waitForDeployment();
   const addr = await market.getAddress();
   const yes = await market.yesShare();
