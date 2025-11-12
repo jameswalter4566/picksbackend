@@ -724,10 +724,10 @@ const server = http.createServer(async (req, res) => {
       const pickId = (body.pickId || body.id || '').toString().trim();
       const marketAddress = normalizeAddress(body.marketAddress || body.address);
       const resultRaw = (body.result || body.outcome || '').toString().trim().toLowerCase();
-      const allowedResults = new Set(['less', 'more', 'void', 'yes', 'no', 'invalid', 'under', 'over']);
+      const allowedResults = new Set(['yes', 'no']);
       if (!marketAddress) { sendJson(res, 400, { error: 'marketAddress required' }); return; }
       if (!resultRaw || !allowedResults.has(resultRaw)) {
-        sendJson(res, 400, { error: 'result must be one of less, more, void, yes, no, invalid, under, over' });
+        sendJson(res, 400, { error: 'result must be "yes" or "no"' });
         return;
       }
       if (!(process.env.ANKR_API_KEY || process.env.BSC_MAINNET_RPC)) {

@@ -9,14 +9,8 @@ function normalizeAddress(addr) {
 function mapOutcomeCode(resultRaw) {
   const key = (resultRaw || '').toString().trim().toLowerCase();
   const lookup = {
-    less: 1,
-    under: 1,
     yes: 1,
-    more: 2,
-    over: 2,
     no: 2,
-    void: 3,
-    invalid: 3,
   };
   return lookup[key];
 }
@@ -34,7 +28,7 @@ async function main() {
   const resultRaw = process.env.RESOLVE_RESULT || '';
   const outcome = mapOutcomeCode(resultRaw);
   if (!outcome) {
-    throw new Error('RESOLVE_RESULT env var must be one of: less, more, void, yes, no, invalid, under, over');
+    throw new Error('RESOLVE_RESULT env var must be either "yes" or "no"');
   }
 
   const [signer] = await ethers.getSigners();
