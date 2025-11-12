@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 
 const port = process.env.PORT || 3000;
+const CREATOR_FEE_SPLIT_BPS = 150;
 
 function parseCookies(req) {
   const header = req.headers['cookie'] || '';
@@ -462,13 +463,13 @@ const server = http.createServer(async (req, res) => {
       if (endTime) env.END_TIME = endTime;
       if (cutoffTime) env.CUTOFF_TIME = cutoffTime;
       const bodyCreator = normalizeAddress(body.creatorFeeRecipient || body.creator_wallet || body.creatorWallet);
-      const defaultCreatorSplit = Number(process.env.DEFAULT_CREATOR_FEE_SPLIT_BPS || '0');
-      const bodySplit = Number(body.creatorFeeSplitBps);
-      const creatorSplit = Number.isFinite(bodySplit) ? bodySplit : defaultCreatorSplit;
-      if (bodyCreator && creatorSplit > 0) {
-        env.CREATOR_FEE_RECIPIENT = bodyCreator;
-        env.CREATOR_FEE_SPLIT_BPS = String(Math.max(0, Math.min(10_000, creatorSplit)));
+      if (!bodyCreator) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'creatorFeeRecipient is required for deployment' }));
+        return;
       }
+      env.CREATOR_FEE_RECIPIENT = bodyCreator;
+      env.CREATOR_FEE_SPLIT_BPS = String(CREATOR_FEE_SPLIT_BPS);
 
       const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
         cwd: __dirname,
@@ -510,15 +511,17 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'pickId and name are required' }));
         return;
       }
+      console.log('[launch-evm-market] request received', {
+        pickId,
+        namePrefix,
+        bodyCreator: normalizeAddress(body.creatorFeeRecipient || body.creatorWallet || body.creator_wallet) ? 'provided' : 'missing',
+      });
 
       const overrideUrl = (body.supabaseUrl || '').toString().trim();
       const overrideKey = (body.serviceRoleKey || '').toString().trim();
       const supabaseUrl = overrideUrl || process.env.SUPABASE_URL;
       const supabaseKey = overrideKey || process.env.SUPABASE_SERVICE_ROLE_KEY;
       let creatorWallet = normalizeAddress(body.creatorFeeRecipient || body.creatorWallet || body.creator_wallet);
-      const defaultCreatorSplit = Number(process.env.DEFAULT_CREATOR_FEE_SPLIT_BPS || '0');
-      let creatorSplitBps = Number(body.creatorFeeSplitBps);
-      if (!Number.isFinite(creatorSplitBps)) creatorSplitBps = defaultCreatorSplit;
       let pickMeta = null;
 
       const nowSec = Math.floor(Date.now() / 1000);
@@ -537,12 +540,21 @@ const server = http.createServer(async (req, res) => {
       }
 
       // Optionally use Supabase to fetch pick.expires_at/duration_sec if still unset
-      if (((!Number.isFinite(endTime) || endTime <= nowSec) || !creatorWallet || !Number.isFinite(creatorSplitBps) || creatorSplitBps <= 0) && supabaseUrl && supabaseKey) {
+      if (((!Number.isFinite(endTime) || endTime <= nowSec) || !creatorWallet) && supabaseUrl && supabaseKey) {
         try {
           const { createClient } = await import('@supabase/supabase-js');
           const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false, autoRefreshToken: false } });
-          const { data: pick } = await supabase.from('picks').select('expires_at, duration_sec, creator_wallet, creator_fee_recipient, creator_fee_split_bps').eq('id', pickId).maybeSingle();
+          const { data: pick } = await supabase
+            .from('picks')
+            .select('expires_at, duration_sec, creator_wallet, creator_fee_recipient, creator_fee_split_bps, creator_id')
+            .eq('id', pickId)
+            .maybeSingle();
           if (pick) {
+            console.log('[launch-evm-market] fetched pick metadata', {
+              pickId,
+              creatorId: pick.creator_id || null,
+              hasCreatorWallet: Boolean(pick.creator_fee_recipient || pick.creator_wallet),
+            });
             pickMeta = pick;
             const exp = pick.expires_at ? Math.floor(new Date(pick.expires_at).getTime() / 1000) : NaN;
             if (Number.isFinite(exp) && exp > nowSec) {
@@ -552,17 +564,46 @@ const server = http.createServer(async (req, res) => {
             }
             if (!creatorWallet) {
               const supaCreator = normalizeAddress(pick.creator_fee_recipient || pick.creator_wallet);
-              if (supaCreator) creatorWallet = supaCreator;
-            }
-            if ((!Number.isFinite(creatorSplitBps) || creatorSplitBps <= 0) && Number.isFinite(Number(pick.creator_fee_split_bps))) {
-              const supaSplit = Number(pick.creator_fee_split_bps);
-              if (Number.isFinite(supaSplit) && supaSplit > 0) creatorSplitBps = supaSplit;
+              if (supaCreator) {
+                creatorWallet = supaCreator;
+                console.log('[launch-evm-market] using creator wallet from picks table', { pickId, creatorWallet: supaCreator });
+              }
+              if (!creatorWallet && pick.creator_id) {
+                try {
+                  const { data: creatorUser } = await supabase
+                    .from('users')
+                    .select('wallet')
+                    .eq('id', pick.creator_id)
+                    .maybeSingle();
+                  const fromUser = normalizeAddress(creatorUser?.wallet);
+                  if (fromUser) {
+                    creatorWallet = fromUser;
+                    console.log('[launch-evm-market] using creator wallet from users table', { pickId, creatorId: pick.creator_id, creatorWallet: fromUser });
+                  } else {
+                    console.warn('[launch-evm-market] users lookup returned no wallet', { pickId, creatorId: pick.creator_id });
+                  }
+                } catch (e) {
+                  // ignore user lookup failures; fallback handled later
+                  console.error('[launch-evm-market] failed to fetch user wallet', { pickId, creatorId: pick.creator_id, error: e?.message });
+                }
+              }
             }
           }
         } catch (e) {
           // non-fatal
         }
       }
+
+      if (!creatorWallet) {
+        console.error('[launch-evm-market] creator wallet missing after all lookups', { pickId });
+        res.writeHead(422, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'creator_wallet_missing',
+          message: 'Could not determine the creator wallet from picks.creator_id -> users.wallet for this pick.',
+        }));
+        return;
+      }
+      console.log('[launch-evm-market] resolved creator wallet', { pickId, creatorWallet });
 
       if (!Number.isFinite(endTime) || endTime <= nowSec) {
         endTime = nowSec + 3 * 24 * 3600;
@@ -589,12 +630,17 @@ const server = http.createServer(async (req, res) => {
       if (Number.isFinite(Number(body.feeBps))) env.FEE_BPS = String(Number(body.feeBps));
       env.MARKET_NATIVE = '1';
       env.ESCROW_ASSET = 'native';
-      const finalCreatorSplit = Number.isFinite(creatorSplitBps) ? Math.max(0, Math.min(10_000, creatorSplitBps)) : 0;
-      const finalCreatorWallet = creatorWallet && finalCreatorSplit > 0 ? creatorWallet : null;
-      if (finalCreatorWallet) {
-        env.CREATOR_FEE_RECIPIENT = finalCreatorWallet;
-        env.CREATOR_FEE_SPLIT_BPS = String(finalCreatorSplit);
-      }
+      const finalCreatorSplit = CREATOR_FEE_SPLIT_BPS;
+      const finalCreatorWallet = creatorWallet;
+      env.CREATOR_FEE_RECIPIENT = finalCreatorWallet;
+      env.CREATOR_FEE_SPLIT_BPS = String(finalCreatorSplit);
+      console.log('[launch-evm-market] prepared deployment env', {
+        pickId,
+        endTime,
+        cutoffTime,
+        creatorWallet: finalCreatorWallet,
+        creatorFeeSplitBps: finalCreatorSplit,
+      });
 
       const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
         cwd: __dirname,
@@ -611,8 +657,15 @@ const server = http.createServer(async (req, res) => {
           if (code !== 0 || !json?.success) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, error: 'deploy_failed', output: out.slice(-4000) }));
+            console.error('[launch-evm-market] deployment failed', { pickId, code, stdoutTail: out.slice(-4000) });
             return;
           }
+          console.log('[launch-evm-market] deployment succeeded', {
+            pickId,
+            marketAddress: json.marketAddress,
+            yesShare: json.yesShareAddress,
+            noShare: json.noShareAddress,
+          });
 
           // Update Supabase if configured
           try {
@@ -630,25 +683,24 @@ const server = http.createServer(async (req, res) => {
                 evm_end_time: new Date(Number(json.endTime) * 1000).toISOString(),
                 evm_cutoff_time: new Date(Number(json.cutoffTime) * 1000).toISOString(),
               };
-              if (finalCreatorWallet) {
-                updatePayload.evm_creator_fee_recipient = finalCreatorWallet;
-                updatePayload.evm_creator_fee_split_bps = finalCreatorSplit;
-                if (!pickMeta?.creator_fee_recipient) updatePayload.creator_fee_recipient = finalCreatorWallet;
-                if (!Number.isFinite(Number(pickMeta?.creator_fee_split_bps)) || Number(pickMeta?.creator_fee_split_bps) <= 0) {
-                  updatePayload.creator_fee_split_bps = finalCreatorSplit;
-                }
+              updatePayload.evm_creator_fee_recipient = finalCreatorWallet;
+              updatePayload.evm_creator_fee_split_bps = finalCreatorSplit;
+              updatePayload.creator_fee_recipient = finalCreatorWallet;
+              updatePayload.creator_fee_split_bps = finalCreatorSplit;
+                await supabase.from('picks').update(updatePayload).eq('id', pickId);
+                json.dbUpdate = 'ok';
+                console.log('[launch-evm-market] supabase updated', { pickId, creatorWallet: finalCreatorWallet });
+              } else {
+                json.dbUpdate = 'skipped';
+                json.dbError = 'missing SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY and no overrides provided';
+                console.warn('[launch-evm-market] skipping Supabase update (missing credentials)', { pickId });
               }
-              await supabase.from('picks').update(updatePayload).eq('id', pickId);
-              json.dbUpdate = 'ok';
-            } else {
-              json.dbUpdate = 'skipped';
-              json.dbError = 'missing SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY and no overrides provided';
+            } catch (e) {
+              // still return success with a warning
+              json.dbUpdate = 'failed';
+              json.dbError = (e?.message) || String(e);
+              console.error('[launch-evm-market] supabase update failed', { pickId, error: e?.message });
             }
-          } catch (e) {
-            // still return success with a warning
-            json.dbUpdate = 'failed';
-            json.dbError = (e?.message) || String(e);
-          }
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ...json, pickId }));

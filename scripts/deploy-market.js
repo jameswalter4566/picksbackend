@@ -15,6 +15,12 @@ async function main() {
   const creatorFeeSplitBps = Number.isFinite(creatorFeeSplitBpsRaw)
     ? Math.max(0, Math.min(10_000, creatorFeeSplitBpsRaw))
     : 0;
+  if (creatorFeeRecipient === ethers.ZeroAddress) {
+    throw new Error('CREATOR_FEE_RECIPIENT is required; launch via the backend so the creator wallet is injected automatically.');
+  }
+  if (creatorFeeSplitBps <= 0) {
+    throw new Error('CREATOR_FEE_SPLIT_BPS must be greater than zero.');
+  }
 
   const [signer] = await ethers.getSigners();
   const deployerAddr = await signer.getAddress();

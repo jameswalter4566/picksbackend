@@ -28,12 +28,13 @@ Environment variables (set in Railway)
 - BSCSCAN_API_KEY (optional): for contract verification
 - RESOLVER (optional): owner/resolver address. Defaults to deployer address if unset.
 - FEE_RECIPIENT (optional): fee recipient address. Defaults to deployer address if unset.
-- CREATOR_FEE_RECIPIENT (optional): address that should receive a share of each trade’s fee (e.g., pick creator). Defaults to none.
-- CREATOR_FEE_SPLIT_BPS (optional): portion of the fee (in basis points) sent to the creator wallet.
-- DEFAULT_CREATOR_FEE_SPLIT_BPS (optional): fallback split (bps) applied when launching via `/api/launch-evm-market` if a creator wallet exists but no split is provided.
 - ESCROW_ASSET (optional): mainnet ERC‑20 used for staking; defaults to WBNB 0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c if unset
 - FEE_BPS (optional): fee in basis points; defaults to 300 (3%)
 - FACTORY_ADDR (optional): existing Factory address to create markets from
+
+Creator fee policy
+- `/api/launch-evm-market` always looks up the pick’s `creator_id`, resolves `users.wallet`, and sends 150 bps of every trade’s fee to that wallet.
+- Deployments fail if the creator wallet cannot be found; manual `/api/deploy-market` calls must provide `creatorFeeRecipient` in the POST body and that wallet will also receive the fixed 150 bps share.
 
 Install & compile
 - npm i
