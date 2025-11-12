@@ -79,7 +79,9 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
         uint256 net = amount - fee;
         if (fee > 0) {
             if (creatorFeeRecipient != address(0) && creatorFeeSplitBps > 0) {
-                uint256 creatorCut = (fee * creatorFeeSplitBps) / 10_000;
+                // creatorFeeSplitBps is denominated in trade basis points, not fee basis points,
+                // so convert by applying it to the gross amount and cap to the total fee collected.
+                uint256 creatorCut = (amount * creatorFeeSplitBps) / 10_000;
                 if (creatorCut > fee) creatorCut = fee;
                 uint256 platformCut = fee - creatorCut;
                 if (creatorCut > 0) _sendValue(creatorFeeRecipient, creatorCut);
