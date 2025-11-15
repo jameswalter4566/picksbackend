@@ -30,6 +30,10 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
 
     IWrappedNative public immutable wrappedNative;
 
+    uint256 public resolvedPot;
+    uint256 public remainingPot;
+    uint256 public winningSharesRemaining;
+
     Outcome public finalOutcome;
 
     event Bought(address indexed user, bool isYes, uint256 amountIn, uint256 sharesMinted, uint256 fee);
@@ -130,6 +134,16 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
             "bad"
         );
         finalOutcome = outcome;
+        if (outcome == Outcome.Invalid) {
+            resolvedPot = 0;
+            remainingPot = 0;
+            winningSharesRemaining = 0;
+        } else {
+            uint256 pot = vaultYes + vaultNo;
+            resolvedPot = pot;
+            remainingPot = pot;
+            winningSharesRemaining = outcome == Outcome.Yes ? yesShare.totalSupply() : noShare.totalSupply();
+        }
         if (force) {
             emit ForceResolved(outcome);
         }
@@ -160,16 +174,22 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
 
         bool yesWon = (finalOutcome == Outcome.Yes);
         OutcomeShare winShare = yesWon ? yesShare : noShare;
-        uint256 winVault = yesWon ? vaultYes : vaultNo;
-        uint256 loseVault = yesWon ? vaultNo : vaultYes;
-
         uint256 userShares = winShare.balanceOf(user);
         require(userShares > 0, "no shares");
-
-        uint256 totalWin = winShare.totalSupply();
+        uint256 sharesBefore = winningSharesRemaining;
+        require(sharesBefore > 0, "shares exhausted");
         winShare.burn(user, userShares);
 
-        uint256 payout = ((winVault + loseVault) * userShares) / totalWin;
+        uint256 payout;
+        if (userShares == sharesBefore) {
+            payout = remainingPot;
+            remainingPot = 0;
+            winningSharesRemaining = 0;
+        } else {
+            payout = (remainingPot * userShares) / sharesBefore;
+            remainingPot -= payout;
+            winningSharesRemaining = sharesBefore - userShares;
+        }
         _sendValue(user, payout);
 
         emit Claimed(user, userShares, payout);
