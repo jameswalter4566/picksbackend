@@ -29,6 +29,7 @@ Environment variables (set in Railway)
 - RESOLVER (optional): owner/resolver address. Defaults to deployer address if unset.
 - FEE_RECIPIENT (optional): fee recipient address. Defaults to deployer address if unset.
 - ESCROW_ASSET (optional): mainnet ERC‑20 used for staking; defaults to WBNB 0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c if unset
+- WRAPPED_NATIVE (optional): wrapped BNB contract address used when native payouts fail; defaults to WBNB 0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c
 - FEE_BPS (optional): fee in basis points; defaults to 300 (3%)
 - FACTORY_ADDR (optional): existing Factory address to create markets from
 

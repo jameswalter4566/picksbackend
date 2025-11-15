@@ -5,6 +5,11 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {OutcomeShare} from "./OutcomeShare.sol";
 
+interface IWrappedNative {
+    function deposit() external payable;
+    function transfer(address to, uint256 value) external returns (bool);
+}
+
 /// @title PredictionMarketNative
 /// @notice Minimal BNB-native market that wraps incoming value into YES/NO vault balances
 contract PredictionMarketNative is Ownable, ReentrancyGuard {
@@ -23,6 +28,8 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
     OutcomeShare public yesShare;
     OutcomeShare public noShare;
 
+    IWrappedNative public immutable wrappedNative;
+
     Outcome public finalOutcome;
 
     event Bought(address indexed user, bool isYes, uint256 amountIn, uint256 sharesMinted, uint256 fee);
@@ -38,14 +45,17 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
         address _feeRecipient,
         address _creatorFeeRecipient,
         uint16 _creatorFeeSplitBps,
-        string memory namePrefix
+        string memory namePrefix,
+        address wrappedNativeToken
     ) Ownable(_owner) {
         require(_endTime > block.timestamp, "end in past");
         require(_cutoffTime < _endTime, "cutoff >= end");
+        require(wrappedNativeToken != address(0), "wrapped native required");
         endTime = _endTime;
         cutoffTime = _cutoffTime;
         feeBps = _feeBps;
         feeRecipient = _feeRecipient;
+        wrappedNative = IWrappedNative(wrappedNativeToken);
         require(_creatorFeeSplitBps <= 10_000, "split too large");
         if (_creatorFeeRecipient != address(0) && _creatorFeeSplitBps > 0) {
             creatorFeeRecipient = _creatorFeeRecipient;
@@ -176,6 +186,8 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
     function _sendValue(address to, uint256 amount) internal {
         if (amount == 0) return;
         (bool ok, ) = payable(to).call{value: amount}("");
-        require(ok, "send failed");
+        if (ok) return;
+        wrappedNative.deposit{value: amount}();
+        require(wrappedNative.transfer(to, amount), "wrap send failed");
     }
 }

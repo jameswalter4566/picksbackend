@@ -7,6 +7,11 @@ async function main() {
   }
   const asset = 'native';
   const feeBps = Number(process.env.FEE_BPS || '300');
+  const DEFAULT_WRAPPED_NATIVE = '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c'; // WBNB mainnet
+  const wrappedNative = (process.env.WRAPPED_NATIVE || DEFAULT_WRAPPED_NATIVE).trim();
+  if (!wrappedNative || wrappedNative === ethers.ZeroAddress) {
+    throw new Error('WRAPPED_NATIVE must be set to a valid token address.');
+  }
   const creatorFeeRecipientRaw = process.env.CREATOR_FEE_RECIPIENT || '';
   const creatorFeeSplitBpsRaw = Number(process.env.CREATOR_FEE_SPLIT_BPS || '0');
   const creatorFeeRecipient = creatorFeeRecipientRaw && creatorFeeRecipientRaw.trim()
@@ -39,6 +44,7 @@ async function main() {
   console.log('Fee recipient:', feeRecipient);
   console.log('Asset:', asset, '(native BNB)');
   console.log('Fee bps:', feeBps);
+  console.log('Wrapped native:', wrappedNative, wrappedNative.toLowerCase() === DEFAULT_WRAPPED_NATIVE ? '(default WBNB)' : '');
   console.log('Creator fee recipient:', creatorFeeRecipient === ethers.ZeroAddress ? '(none)' : creatorFeeRecipient);
   console.log('Creator fee split bps:', creatorFeeSplitBps);
 
@@ -51,7 +57,8 @@ async function main() {
     feeRecipient,
     creatorFeeRecipient,
     creatorFeeSplitBps,
-    namePrefix
+    namePrefix,
+    wrappedNative
   );
   await market.waitForDeployment();
   const addr = await market.getAddress();
