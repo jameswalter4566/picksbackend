@@ -796,6 +796,7 @@ const server = http.createServer(async (req, res) => {
       const pickId = (body.pickId || body.id || '').toString().trim();
       const marketAddress = normalizeAddress(body.marketAddress || body.address);
       const walletAddress = normalizeAddress(body.wallet || body.walletAddress || body.user);
+      console.info('[claim-market] request', { pickId, marketAddress, walletAddress });
       if (!marketAddress) { sendJson(res, 400, { error: 'marketAddress required' }); return; }
       if (!walletAddress) { sendJson(res, 400, { error: 'wallet required' }); return; }
       if (!(process.env.ANKR_API_KEY || process.env.BSC_MAINNET_RPC)) {
@@ -824,8 +825,16 @@ const server = http.createServer(async (req, res) => {
         responded = true;
         sendJson(res, statusCode, payload);
       };
-      child.stdout.on('data', (d) => (out += d.toString()));
-      child.stderr.on('data', (d) => (out += d.toString()));
+      child.stdout.on('data', (d) => {
+        const text = d.toString();
+        out += text;
+        console.info('[claim-market] stdout', text.trimEnd());
+      });
+      child.stderr.on('data', (d) => {
+        const text = d.toString();
+        out += text;
+        console.warn('[claim-market] stderr', text.trimEnd());
+      });
       child.on('error', (err) => {
         finish(500, { success: false, error: err?.message || 'Failed to start claim script' });
       });
@@ -837,15 +846,19 @@ const server = http.createServer(async (req, res) => {
           }
           const json = JSON.parse(out.slice(brace));
           if (code === 0 && json?.success) {
+            console.info('[claim-market] success', { pickId, marketAddress, walletAddress, txHash: json?.txHash });
             finish(200, { ...json, pickId });
           } else {
+            console.warn('[claim-market] failure', { code, pickId, output: json });
             finish(500, { success: false, code, pickId, output: json });
           }
         } catch (e) {
+          console.error('[claim-market] parse_error', e);
           finish(500, { success: false, code, pickId, error: e?.message || 'parse_error', output: out.slice(-4000) });
         }
       });
     } catch (e) {
+      console.error('[claim-market] handler error', e);
       sendJson(res, 500, { success: false, error: e?.message || 'claim_market_error' });
     }
     return;

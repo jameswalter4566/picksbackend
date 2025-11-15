@@ -43,6 +43,7 @@ async function main() {
   }
 
   const market = await ethers.getContractAt('PredictionMarketNative', marketAddress, signer);
+  const provider = signer.provider;
 
   const outcome = Number(await market.finalOutcome());
   if (outcome === 0) {
@@ -53,6 +54,20 @@ async function main() {
   const noShareAddr = normalizeAddress(await market.noShare());
   const yesShare = yesShareAddr ? await ethers.getContractAt('OutcomeShare', yesShareAddr, signer) : null;
   const noShare = noShareAddr ? await ethers.getContractAt('OutcomeShare', noShareAddr, signer) : null;
+  const [vaultYes, vaultNo, totalYesSupply, totalNoSupply] = await market.getTotals();
+  const marketBalance = provider ? await provider.getBalance(marketAddress) : 0n;
+  console.log(JSON.stringify({
+    success: false,
+    code: 'CLAIM_PRESTATE',
+    detail: 'diagnostic',
+    marketAddress,
+    outcome,
+    vaultYes: vaultYes.toString(),
+    vaultNo: vaultNo.toString(),
+    totalYesSupply: totalYesSupply.toString(),
+    totalNoSupply: totalNoSupply.toString(),
+    marketBalanceWei: marketBalance?.toString?.() || '0',
+  }));
 
   const yesBalance = yesShare ? await yesShare.balanceOf(claimWallet) : 0n;
   const noBalance = noShare ? await noShare.balanceOf(claimWallet) : 0n;
@@ -107,11 +122,46 @@ async function main() {
     }
   }
 
+  const estimatedPayout = (() => {
+    if (outcome === 3) return yesBalance + noBalance;
+    const userShares = outcome === 1 ? yesBalance : noBalance;
+    const winVault = outcome === 1 ? vaultYes : vaultNo;
+    const loseVault = outcome === 1 ? vaultNo : vaultYes;
+    const totalWinSupply = outcome === 1 ? totalYesSupply : totalNoSupply;
+    if (userShares === 0n || totalWinSupply === 0n) return 0n;
+    return ((winVault + loseVault) * userShares) / totalWinSupply;
+  })();
+
+  console.log(JSON.stringify({
+    success: false,
+    code: 'CLAIM_PAYOUT_ESTIMATE',
+    detail: 'diagnostic',
+    marketAddress,
+    wallet: claimWallet,
+    outcome,
+    yesShareBalanceWei: yesBalance.toString(),
+    noShareBalanceWei: noBalance.toString(),
+    estimatedPayoutWei: estimatedPayout.toString(),
+    marketBalanceWei: marketBalance?.toString?.() || '0',
+  }));
+
   let usedClaimFor = false;
   let tx;
 
   if (claimWallet !== signerAddress) {
     try {
+      try {
+        await market.callStatic.claimFor(claimWallet);
+      } catch (staticErr) {
+        console.error(JSON.stringify({
+          success: false,
+          code: 'CLAIMFOR_STATIC_REVERT',
+          detail: staticErr?.error?.message || staticErr?.message || 'callStatic revert',
+          marketAddress,
+          wallet: claimWallet,
+        }));
+        throw staticErr;
+      }
       tx = await market.claimFor(claimWallet);
       usedClaimFor = true;
     } catch (err) {
@@ -131,6 +181,18 @@ async function main() {
       throw err;
     }
   } else {
+    try {
+      await market.callStatic.claim();
+    } catch (staticErr) {
+      console.error(JSON.stringify({
+        success: false,
+        code: 'CLAIM_STATIC_REVERT',
+        detail: staticErr?.error?.message || staticErr?.message || 'callStatic revert',
+        marketAddress,
+        wallet: claimWallet,
+      }));
+      throw staticErr;
+    }
     tx = await market.claim();
   }
 
