@@ -203,6 +203,11 @@ contract PredictionMarketNative is Ownable, ReentrancyGuard {
         return (vaultYes, vaultNo, yesShare.totalSupply(), noShare.totalSupply());
     }
 
+    function setShareTransferAgent(address agent, bool allowed) external onlyOwner {
+        yesShare.setTransferAgent(agent, allowed);
+        noShare.setTransferAgent(agent, allowed);
+    }
+
     function _sendValue(address to, uint256 amount) internal {
         if (amount == 0) return;
         (bool ok, ) = payable(to).call{value: amount}("");
