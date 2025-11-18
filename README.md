@@ -56,6 +56,14 @@ Run scripts on Railway
   - `npx hardhat run scripts/deploy-market.js --network bscMainnet`
   - or `npx hardhat run scripts/create-market.js --network bscMainnet`
 
+Legacy market manual refunds
+- Markets deployed before the “snapshot pot” fix may require manual reimbursements because the market vault’s remaining BNB can no longer be withdrawn by the stuck user.
+- Use `npm run refund:manual` (alias for `npx hardhat run scripts/manual-refund.js --network bscMainnet`) with `DEPLOYER_PK`, `MARKET_ADDRESS`, and `CLAIM_WALLET` env vars set.
+- The script loads the legacy `PredictionMarketNative`, replays the frontend payout formula `payoutWei = (vaultYes + vaultNo) * userWinningShares / totalWinningSupply`, and logs the exact refund amount so you can verify it matches expectations.
+- If the market’s BNB balance is below the owed amount, the script automatically tops the contract up from the owner signer and then calls `claimFor(CLAIM_WALLET)` so the stuck wallet receives the payout without needing to call `claim()` themselves.
+- Set `REFUND_DIRECT=true` to bypass the contract entirely — the script will instead send the computed payout straight from the owner wallet to `CLAIM_WALLET`, which is useful when the market bytecode is irreparably broken.
+- This workflow is only needed for legacy deployments; new PredictionMarketNative contracts that include the snapshot pot accounting split their `remainingPot` fairly and should not require any manual reimbursements.
+
 Security notes
 - Never commit secrets. Use Railway secrets for all env vars.
 - Double‑check ESCROW_ASSET is the mainnet token address.

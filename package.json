@@ -11,7 +11,8 @@
     "start": "node index.js",
     "compile": "hardhat compile",
     "deploy:market:mainnet": "hardhat run scripts/deploy-market.js --network bscMainnet",
-    "create:market:mainnet": "hardhat run scripts/create-market.js --network bscMainnet"
+    "create:market:mainnet": "hardhat run scripts/create-market.js --network bscMainnet",
+    "refund:manual": "hardhat run scripts/manual-refund.js --network bscMainnet"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^4.0.0",
