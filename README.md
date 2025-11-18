@@ -1,70 +1,95 @@
-BNB Prediction Market — Backend Deploy Toolkit
+# picks.run — Backend (Contracts & Ops)
 
-This repository contains a minimal Hardhat setup to deploy the per‑pick prediction market contracts to BNB Smart Chain mainnet and to create new markets (one per pick) for your backend running on Railway.
+This repository powers the smart-contract and operational side of picks.run, the first prediction market social platform built for retail consumers. Every time a creator launches a new pick in the UI, our backend stands up a pair of on-chain vaults (YES/NO) on BNB, routes fees to both the protocol and the creator, and exposes tooling so the prize wallet can buy and transfer reward shares during the attention flywheel campaign.
 
-What’s included
-- contracts/prediction/
-  - OutcomeShare.sol: Non‑transferable receipt token (YES/NO shares)
-  - PredictionMarket.sol: Per‑pick market vault with buy/resolve/claim
-- scripts/
-  - deploy-market.js: Deploy a single market directly (no factory)
-  - create-market.js: Call an existing Factory’s createMarket to deploy a market
-- hardhat.config.js: Hardhat config with bscMainnet
-- package.json: Commands to compile and run scripts
+## Repository structure
 
-Service start command (Railway/Railpack)
-- This repo includes a minimal `index.js` HTTP server and a `start` script so Railpack detects a start command.
-- The server only exposes `/health` and a JSON status at `/` and listens on `PORT` (defaults to 3000).
-- Use this service as a toolbox: exec into it and run the Hardhat scripts with env vars set.
+| Path | Purpose |
+| --- | --- |
+| `contracts/prediction/OutcomeShare.sol` | Receipt token (YES/NO shares). Transferability can be toggled (used by prize wallet to gift shares). |
+| `contracts/prediction/PredictionMarket.sol` | Generic ERC-20 stake variant (unused in production but kept for reference). |
+| `contracts/prediction/PredictionMarketNative.sol` | Primary contract: native BNB vault with twin pools, creator fee split, transfer-agent support, and deterministic resolution hooks. |
+| `scripts/deploy-market.js` | Deploys a single PredictionMarketNative instance (called by the Railway admin service). |
+| `scripts/create-market.js` | Calls a factory (if configured) to spin up markets in bulk. |
+| `scripts/claim-market.js` / `scripts/resolve-market.js` | Helpers to settle a market or force-claim for a wallet. |
+| `scripts/manual-refund.js` | Legacy safety net to reimburse stuck users from pre-snapshot markets. |
+| `hardhat.config.js` | Hardhat network configuration (BSC mainnet + verification). |
+| `index.js` | Lightweight Express server exposing `/health` so Railway keeps the service alive (and so engineers can exec in to run scripts). |
+| `supabase/` | Schema migrations relevant to backend jobs (e.g., creator fee tracking columns). |
 
-Admin page
-- Route: `GET /mein/arbeit`
-- Protect with Railway secret `password_pin` (required). You sign in with the PIN and can launch a test market (vault) from the page.
-- The page shows configured details (without exposing secrets) and a "Launch Program" button that deploys a test market via Hardhat and prints the transaction logs/addresses.
+## Why this matters
 
-Environment variables (set in Railway)
-- ANKR_API_KEY: required; RPC is `https://rpc.ankr.com/bsc/<ANKR_API_KEY>`
-- DEPLOYER_PK: EOA private key (0x…) with a small amount of BNB for gas
-- BSCSCAN_API_KEY (optional): for contract verification
-- RESOLVER (optional): owner/resolver address. Defaults to deployer address if unset.
-- FEE_RECIPIENT (optional): fee recipient address. Defaults to deployer address if unset.
-- ESCROW_ASSET (optional): mainnet ERC‑20 used for staking; defaults to WBNB 0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c if unset
-- WRAPPED_NATIVE (optional): wrapped BNB contract address used when native payouts fail; defaults to WBNB 0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c
-- FEE_BPS (optional): fee in basis points; defaults to 300 (3%)
-- FACTORY_ADDR (optional): existing Factory address to create markets from
+- **One market per prediction** – every pick on the frontend gets its own vault contract with YES/NO pools, so resolution and fee accounting stays isolated.
+- **Creator revenue share** – 200–300 bps platform fee, with 150 bps automatically routed to the creator wallet stored in Supabase.
+- **Attention flywheel** – prize wallet buys 0.01 BNB of YES/NO after a winning X reply is detected, then transfers the minted shares thanks to the `setShareTransferAgent` hook added to OutcomeShare.
+- **Operational safety** – manuals scripts (refund, claimFor, resolve) provide backstops if an older market or settlement fails.
 
-Creator fee policy
-- `/api/launch-evm-market` always looks up the pick’s `creator_id`, resolves `users.wallet`, and sends 150 bps of every trade’s fee to that wallet.
-- Deployments fail if the creator wallet cannot be found; manual `/api/deploy-market` calls must provide `creatorFeeRecipient` in the POST body and that wallet will also receive the fixed 150 bps share.
+## Environment variables
 
-Install & compile
-- npm i
-- npx hardhat compile
+Set these as Railway secrets (or locally via `.env` + `hardhat.config.js`):
 
-Deploy a standalone market (no factory)
-- npx hardhat run scripts/deploy-market.js --network bscMainnet
+| Variable | Description |
+| --- | --- |
+| `ANKR_API_KEY` | RPC key (used for read/write + trade indexing). |
+| `DEPLOYER_PK` | Private key of the deployer/prize wallet (funded with small amount of BNB). |
+| `PRIZE_PRIVATE_KEY` | Same as `DEPLOYER_PK` in production; used by Supabase Edge when gifting shares. |
+| `BSCSCAN_API_KEY` | Optional, for contract verification. |
+| `RESOLVER` | Address authorized to resolve markets; defaults to deployer. |
+| `FEE_RECIPIENT` | Protocol fee sink; defaults to deployer. |
+| `CREATOR_FEE_BPS` | Creator revenue share (default 150 bps). |
+| `FEE_BPS` | Platform fee (default 300 bps). |
+| `ESCROW_ASSET` | ERC-20 stake token (defaults to WBNB). Use only if not using the native market. |
+| `WRAPPED_NATIVE` | WBNB address (defaults to canonical). |
+| `FACTORY_ADDR` | Optional factory contract used by `scripts/create-market.js`. |
+| `MARKET_ADDRESS`, `CLAIM_WALLET`, `REFUND_DIRECT` | Used by `manual-refund.js`. |
 
-Create a market via existing Factory
-- Ensure FACTORY_ADDR is set in Railway secrets
-- npx hardhat run scripts/create-market.js --network bscMainnet
+## Commands
 
-Run scripts on Railway
-- Set secrets: ANKR_API_KEY, DEPLOYER_PK, (optional) ESCROW_ASSET, FEE_BPS, RESOLVER, FEE_RECIPIENT, FACTORY_ADDR, BSCSCAN_API_KEY
-- If RESOLVER/FEE_RECIPIENT are omitted, scripts use the deployer address derived from DEPLOYER_PK.
-- If ESCROW_ASSET is omitted, scripts default to WBNB.
-- Exec into the running service and run a script, for example:
-  - `npx hardhat run scripts/deploy-market.js --network bscMainnet`
-  - or `npx hardhat run scripts/create-market.js --network bscMainnet`
+```bash
+npm install               # Install Hardhat + deps
+npx hardhat compile       # Compile contracts
+npm run deploy:market:mainnet   # scripts/deploy-market.js on BSC
+npm run create:market:mainnet   # scripts/create-market.js on BSC (requires FACTORY_ADDR)
+npm run refund:manual          # Run manual refund workflow for legacy markets
+```
 
-Legacy market manual refunds
-- Markets deployed before the “snapshot pot” fix may require manual reimbursements because the market vault’s remaining BNB can no longer be withdrawn by the stuck user.
-- Use `npm run refund:manual` (alias for `npx hardhat run scripts/manual-refund.js --network bscMainnet`) with `DEPLOYER_PK`, `MARKET_ADDRESS`, and `CLAIM_WALLET` env vars set.
-- The script loads the legacy `PredictionMarketNative`, replays the frontend payout formula `payoutWei = (vaultYes + vaultNo) * userWinningShares / totalWinningSupply`, and logs the exact refund amount so you can verify it matches expectations.
-- If the market’s BNB balance is below the owed amount, the script automatically tops the contract up from the owner signer and then calls `claimFor(CLAIM_WALLET)` so the stuck wallet receives the payout without needing to call `claim()` themselves.
-- Set `REFUND_DIRECT=true` to bypass the contract entirely — the script will instead send the computed payout straight from the owner wallet to `CLAIM_WALLET`, which is useful when the market bytecode is irreparably broken.
-- This workflow is only needed for legacy deployments; new PredictionMarketNative contracts that include the snapshot pot accounting split their `remainingPot` fairly and should not require any manual reimbursements.
+Railway keeps the service alive via `npm start` which calls `node index.js`; engineers SSH/exec into the container to run the scripts above with the production secrets already loaded.
 
-Security notes
-- Never commit secrets. Use Railway secrets for all env vars.
-- Double‑check ESCROW_ASSET is the mainnet token address.
-- Keep DEPLOYER_PK minimal and funded with small BNB.
+## Launch flow (called by the frontend)
+
+1. Creator fills out the “New pick” modal on the frontend.
+2. Supabase stores the pick draft and calls a Railway webhook (`/api/launch-evm-market`) that wraps `scripts/deploy-market.js`.
+3. The script deploys `PredictionMarketNative`, sets creator/prize wallets, enables transfer agent role, and returns the market + share addresses.
+4. Frontend updates the pick row with these addresses and posts the X Poll.
+
+## Claim flow support
+
+- Supabase Edge function `claim-reward-shares` loads the pick row, determines the market/YES/NO token addresses, and uses `PRIZE_PRIVATE_KEY` to:
+  1. Call `buyYesWithBNB` or `buyNoWithBNB` with 0.01 BNB.
+  2. Call `OutcomeShare.transfer` to send the minted shares to the winner’s Privy wallet.
+- To enable this, every new market automatically calls `yesShare.setShareTransferAgent(prizeWallet, true)` and the same for NO shares during deployment.
+- Legacy markets (pre-change) can be patched by running the `setShareTransferAgent` transaction manually.
+
+## Manual operations & safety nets
+
+- **`scripts/claim-market.js`** – run when a user cannot claim due to UI issues; requires `MARKET_ADDRESS` and target wallet.
+- **`scripts/manual-refund.js`** – computes payouts for legacy markets where the snapshot pot fix is absent and optionally wires the funds directly.
+- **`scripts/resolve-market.js`** – sets the final outcome (YES, NO, INVALID) when the oracle or moderator has made a decision.
+
+Before running any script in production:
+
+1. `export DEPLOYER_PK=0x…` (never commit it).
+2. Double-check gas estimates and targeted market addresses.
+3. Monitor logs in Railway to confirm the transaction hash and new contract addresses.
+
+## How judges can review
+
+1. Clone this repo alongside the [frontend](https://github.com/picksdotrun/pciksdotrunfrontend).
+2. Install dependencies and run `npx hardhat compile` to generate artifacts.
+3. Inspect `scripts/deploy-market.js` to see exactly how markets are configured (fee bps, creator split, transfer agents).
+4. Review `scripts/manual-refund.js` to understand the safety fallback for early users.
+5. Optional: point Hardhat at BSC testnet, fund a throwaway wallet with test BNB, and run `npx hardhat run scripts/deploy-market.js --network bscTestnet` to watch a pick spin up.
+
+---
+
+Questions or security concerns? Reach us at security@picks.run or DM @picksdotrun on X. Thanks for evaluating picks.run! 
