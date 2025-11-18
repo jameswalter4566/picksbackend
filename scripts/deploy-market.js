@@ -65,6 +65,18 @@ async function main() {
   const yes = await market.yesShare();
   const no = await market.noShare();
 
+  const prizeTransferAgent = process.env.PRIZE_TRANSFER_AGENT
+    ? ethers.getAddress(process.env.PRIZE_TRANSFER_AGENT)
+    : process.env.PRIZE_PRIVATE_KEY
+      ? ethers.computeAddress(process.env.PRIZE_PRIVATE_KEY)
+      : deployerAddr;
+  if (prizeTransferAgent) {
+    console.log('Setting prize transfer agent:', prizeTransferAgent);
+    const tx = await market.setShareTransferAgent(prizeTransferAgent, true);
+    await tx.wait();
+    console.log('Prize transfer agent enabled');
+  }
+
   if (process.env.OUTPUT_JSON === '1') {
     const out = {
       success: true,
@@ -80,6 +92,7 @@ async function main() {
       marketAddress: addr,
       yesShareAddress: yes,
       noShareAddress: no,
+      prizeTransferAgent,
     };
     console.log(JSON.stringify(out));
   } else {
