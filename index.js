@@ -524,6 +524,14 @@ const server = http.createServer(async (req, res) => {
       let creatorWallet = normalizeAddress(body.creatorFeeRecipient || body.creatorWallet || body.creator_wallet);
       let pickMeta = null;
 
+      console.log('[launch-evm-market] raw body', {
+        pickId,
+        hasName: Boolean(namePrefix),
+        hasCreatorOverride: Boolean(creatorWallet),
+        hasSupabaseOverride: Boolean(overrideUrl || overrideKey),
+        bodyKeys: Object.keys(body || {}),
+      });
+
       const nowSec = Math.floor(Date.now() / 1000);
       const explicitEnd = Number(body.endTime);
       const explicitCutoff = Number(body.cutoffTime);
@@ -640,6 +648,23 @@ const server = http.createServer(async (req, res) => {
         cutoffTime,
         creatorWallet: finalCreatorWallet,
         creatorFeeSplitBps: finalCreatorSplit,
+        supabaseUrl: supabaseUrl ? mask(supabaseUrl) : 'missing',
+        hasSupabaseKey: Boolean(supabaseKey),
+        envSummary: {
+          NAME_PREFIX: namePrefix,
+          END_TIME: String(endTime),
+          CUTOFF_TIME: String(cutoffTime),
+          FEE_BPS: env.FEE_BPS || 'default',
+          MARKET_NATIVE: env.MARKET_NATIVE,
+          ESCROW_ASSET: env.ESCROW_ASSET,
+          CREATOR_FEE_RECIPIENT: finalCreatorWallet,
+          CREATOR_FEE_SPLIT_BPS: String(finalCreatorSplit),
+        },
+      });
+
+      console.log('[launch-evm-market] spawning deploy', {
+        cmd: 'npx hardhat run scripts/deploy-market.js --network bscMainnet',
+        cwd: __dirname,
       });
 
       const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
@@ -647,11 +672,27 @@ const server = http.createServer(async (req, res) => {
         env,
       });
       let out = '';
+      let stderr = '';
       child.stdout.on('data', (d) => (out += d.toString()));
-      child.stderr.on('data', (d) => (out += d.toString()));
+      child.stderr.on('data', (d) => {
+        const msg = d.toString();
+        stderr += msg;
+        out += msg;
+      });
       child.on('close', async (code) => {
+        console.log('[launch-evm-market] deploy process exited', {
+          pickId,
+          code,
+          stdoutBytes: out.length,
+          stderrBytes: stderr.length,
+        });
         try {
           const jsonStart = out.lastIndexOf('{');
+          console.log('[launch-evm-market] deploy output parse probe', {
+            pickId,
+            jsonStart,
+            outTail: out.slice(-800),
+          });
           const json = JSON.parse(out.slice(jsonStart));
           json.marketType = json.marketType || (json.asset === 'native' ? 'native_bnb' : 'erc20');
           if (code !== 0 || !json?.success) {

@@ -1,5 +1,26 @@
 const { ethers } = require("hardhat");
 
+function errorDetails(err) {
+  if (!err) return {};
+  return {
+    name: err.name,
+    message: err.message,
+    shortMessage: err.shortMessage,
+    code: err.code,
+    reason: err.reason,
+    data: err.data,
+    transaction: err.transaction,
+    receipt: err.receipt && {
+      status: err.receipt.status,
+      hash: err.receipt.hash,
+      from: err.receipt.from,
+      to: err.receipt.to,
+      gasUsed: err.receipt.gasUsed && err.receipt.gasUsed.toString(),
+      blockNumber: err.receipt.blockNumber,
+    },
+  };
+}
+
 async function main() {
   const requestedAsset = process.env.ESCROW_ASSET ? process.env.ESCROW_ASSET.toLowerCase() : undefined;
   if (requestedAsset && requestedAsset !== 'native' && requestedAsset !== 'bnb') {
@@ -32,6 +53,10 @@ async function main() {
   const owner        = process.env.RESOLVER || deployerAddr;
   const feeRecipient = process.env.FEE_RECIPIENT || deployerAddr;
 
+  const network = await ethers.provider.getNetwork();
+  const feeData = await ethers.provider.getFeeData();
+  const balance = await ethers.provider.getBalance(deployerAddr);
+
   const now = Math.floor(Date.now()/1000);
   const envEnd   = process.env.END_TIME ? BigInt(process.env.END_TIME) : null;
   const envCut   = process.env.CUTOFF_TIME ? BigInt(process.env.CUTOFF_TIME) : null;
@@ -42,6 +67,13 @@ async function main() {
   console.log('Deployer:', deployerAddr);
   console.log('Owner/Resolver:', owner);
   console.log('Fee recipient:', feeRecipient);
+  console.log('Network:', network.name, Number(network.chainId));
+  console.log('Deployer balance:', balance.toString());
+  console.log('Fee data:', {
+    gasPrice: feeData.gasPrice && feeData.gasPrice.toString(),
+    maxFeePerGas: feeData.maxFeePerGas && feeData.maxFeePerGas.toString(),
+    maxPriorityFeePerGas: feeData.maxPriorityFeePerGas && feeData.maxPriorityFeePerGas.toString(),
+  });
   console.log('Asset:', asset, '(native BNB)');
   console.log('Fee bps:', feeBps);
   console.log('Wrapped native:', wrappedNative, wrappedNative.toLowerCase() === DEFAULT_WRAPPED_NATIVE ? '(default WBNB)' : '');
@@ -60,10 +92,16 @@ async function main() {
     namePrefix,
     wrappedNative
   );
+  console.log('Deploy tx:', market.deploymentTransaction && market.deploymentTransaction().hash);
   await market.waitForDeployment();
   const addr = await market.getAddress();
   const yes = await market.yesShare();
   const no = await market.noShare();
+  const marketOwner = await market.owner();
+  console.log('Market owner:', marketOwner, marketOwner.toLowerCase() === deployerAddr.toLowerCase() ? '(deployer)' : '(external)');
+  console.log('Market address:', addr);
+  console.log('Yes share:', yes);
+  console.log('No share:', no);
 
   const prizeTransferAgent = process.env.PRIZE_TRANSFER_AGENT
     ? ethers.getAddress(process.env.PRIZE_TRANSFER_AGENT)
@@ -72,9 +110,25 @@ async function main() {
       : deployerAddr;
   if (prizeTransferAgent) {
     console.log('Setting prize transfer agent:', prizeTransferAgent);
-    const tx = await market.setShareTransferAgent(prizeTransferAgent, true);
-    await tx.wait();
-    console.log('Prize transfer agent enabled');
+    try {
+      const tx = await market.setShareTransferAgent(prizeTransferAgent, true);
+      console.log('Prize transfer agent tx:', tx.hash);
+      const receipt = await tx.wait();
+      console.log('Prize transfer agent receipt:', {
+        status: receipt?.status,
+        gasUsed: receipt?.gasUsed && receipt.gasUsed.toString(),
+        blockNumber: receipt?.blockNumber,
+      });
+      console.log('Prize transfer agent enabled');
+    } catch (err) {
+      console.error('Prize transfer agent failed:', errorDetails(err));
+      try {
+        await market.callStatic.setShareTransferAgent(prizeTransferAgent, true);
+      } catch (staticErr) {
+        console.error('Prize transfer agent callStatic failed:', errorDetails(staticErr));
+      }
+      throw err;
+    }
   }
 
   if (process.env.OUTPUT_JSON === '1') {
