@@ -3,13 +3,13 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-picks_market = "11111111111111111111111111111111"
+picks_market = "3CioMvyUg4koYTYhPVk1CjkTFnS6QNgH1vyhyNxN2xtY"
 
 [programs.devnet]
-picks_market = "11111111111111111111111111111111"
+picks_market = "3CioMvyUg4koYTYhPVk1CjkTFnS6QNgH1vyhyNxN2xtY"
 
 [programs.mainnet]
-picks_market = "11111111111111111111111111111111"
+picks_market = "3CioMvyUg4koYTYhPVk1CjkTFnS6QNgH1vyhyNxN2xtY"
 
 [registry]
 url = "https://api.apr.dev"

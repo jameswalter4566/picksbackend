@@ -9,7 +9,7 @@
 //                         creator split with Solidity-identical math); net lands
 //                         in vault PDA; 1 share = 1 lamport, minted to user ATA
 //   resolve / force_resolve -> owner sets Yes | No | Invalid (force skips end-time gate)
-//   claim / claim_for  -> Invalid refunds 1:1; winners burn shares for pro-rata
+//   claim              -> Invalid refunds 1:1; winners burn shares for pro-rata
 //                         payout from combined vault (last claimer takes remainder)
 
 use anchor_lang::prelude::*;
@@ -18,30 +18,35 @@ use anchor_lang::solana_program::system_instruction;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_2022::{
     self,
-    spl_token_2022::{
-        extension::ExtensionType,
-        instruction as token_2022_ix,
-        state::Mint as MintState,
-    },
+    spl_token_2022::instruction as token_2022_ix,
     Burn, MintTo, Token2022,
 };
 use anchor_spl::token_interface::{Mint, TokenAccount};
 
-declare_id!("11111111111111111111111111111111"); // TODO: `anchor keys sync` after `solana-keygen new -o target/deploy/picks_market-keypair.json`
+declare_id!("3CioMvyUg4koYTYhPVk1CjkTFnS6QNgH1vyhyNxN2xtY");
 
 pub const MARKET_SEED: &[u8] = b"market";
 pub const VAULT_SEED: &[u8] = b"vault";
 pub const YES_MINT_SEED: &[u8] = b"yes";
 pub const NO_MINT_SEED: &[u8] = b"no";
 
-pub const MAX_FEE_BPS: u16 = 1_000;     // 10% hard cap (Solidity has none; we add one for safety)
+pub const MAX_FEE_BPS: u16 = 1_000;     // 10% hard cap (Solidity has none; we add for safety)
 pub const MAX_SPLIT_BPS: u16 = 10_000;  // mirror of Solidity's `_creatorFeeSplitBps <= 10_000`
 pub const SHARE_DECIMALS: u8 = 9;       // 1 share = 1 lamport (clean accounting)
+
+// Token-2022 Mint with NonTransferable extension byte size:
+//   82 (base Mint) padded to 165 (multisig size)
+// + 1 (account type discriminator)
+// + 4 (TLV header for NonTransferable: 2 type + 2 length, 0 data)
+// = 170 bytes
+pub const MINT_SPACE: usize = 170;
 
 #[program]
 pub mod picks_market {
     use super::*;
 
+    /// Step 1 of market setup. Creates the Market PDA + Vault PDA.
+    /// Call `initialize_share_mints` in the same transaction to finish setup.
     pub fn initialize_market(
         ctx: Context<InitializeMarket>,
         args: InitializeMarketArgs,
@@ -55,13 +60,18 @@ pub mod picks_market {
             PicksError::SplitTooLarge
         );
 
+        let market_key = ctx.accounts.market.key();
+        let owner_key = ctx.accounts.owner.key();
+        let bump = ctx.bumps.market;
+        let vault_bump = ctx.bumps.vault;
+
         let market = &mut ctx.accounts.market;
-        market.bump = ctx.bumps.market;
-        market.vault_bump = ctx.bumps.vault;
-        market.yes_mint_bump = ctx.bumps.yes_mint;
-        market.no_mint_bump = ctx.bumps.no_mint;
+        market.bump = bump;
+        market.vault_bump = vault_bump;
+        market.yes_mint_bump = 0; // set by initialize_share_mints
+        market.no_mint_bump = 0;  // set by initialize_share_mints
         market.market_id = args.market_id;
-        market.owner = ctx.accounts.owner.key();
+        market.owner = owner_key;
         market.fee_recipient = args.fee_recipient;
         market.fee_bps = args.fee_bps;
         market.creator_fee_recipient = args.creator_fee_recipient;
@@ -74,54 +84,91 @@ pub mod picks_market {
         market.resolved_pot = 0;
         market.remaining_pot = 0;
         market.winning_shares_remaining = 0;
+        market.mints_ready = false;
 
-        // Initialize each mint with NonTransferable extension, mint authority = Market PDA
+        emit!(MarketInitialized {
+            market: market_key,
+            owner: owner_key,
+            end_time: args.end_time,
+            cutoff_time: args.cutoff_time,
+            fee_bps: args.fee_bps,
+        });
+        Ok(())
+    }
+
+    /// Step 2 of market setup. Creates the YES/NO Token-2022 NonTransferable mints.
+    /// Must be called by the market owner. Bundles with `initialize_market` in one tx.
+    pub fn initialize_share_mints(ctx: Context<InitializeShareMints>) -> Result<()> {
+        require!(!ctx.accounts.market.mints_ready, PicksError::MintsAlreadyReady);
+
         init_nontransferable_mint(
             &ctx.accounts.yes_mint.to_account_info(),
             &ctx.accounts.market.to_account_info(),
             &ctx.accounts.token_program,
-            &ctx.accounts.rent,
         )?;
         init_nontransferable_mint(
             &ctx.accounts.no_mint.to_account_info(),
             &ctx.accounts.market.to_account_info(),
             &ctx.accounts.token_program,
-            &ctx.accounts.rent,
         )?;
 
-        emit!(MarketInitialized {
-            market: market.key(),
-            owner: market.owner,
-            end_time: market.end_time,
-            cutoff_time: market.cutoff_time,
-            fee_bps: market.fee_bps,
-        });
+        let yes_bump = ctx.bumps.yes_mint;
+        let no_bump = ctx.bumps.no_mint;
+
+        let market = &mut ctx.accounts.market;
+        market.yes_mint_bump = yes_bump;
+        market.no_mint_bump = no_bump;
+        market.mints_ready = true;
         Ok(())
     }
 
     pub fn buy_yes(ctx: Context<BuyYes>, amount: u64) -> Result<()> {
         let clock = Clock::get()?;
-        let market = &mut ctx.accounts.market;
+        let (
+            cutoff_time,
+            final_outcome,
+            fee_bps,
+            fee_recipient_pk,
+            creator_fee_recipient_pk,
+            creator_fee_split_bps,
+            market_bump,
+            market_id,
+            market_key,
+        ) = {
+            let m = &ctx.accounts.market;
+            (
+                m.cutoff_time,
+                m.final_outcome,
+                m.fee_bps,
+                m.fee_recipient,
+                m.creator_fee_recipient,
+                m.creator_fee_split_bps,
+                m.bump,
+                m.market_id,
+                m.key(),
+            )
+        };
+
         require!(amount > 0, PicksError::ZeroAmount);
+        require!(clock.unix_timestamp < cutoff_time, PicksError::TradingClosed);
         require!(
-            clock.unix_timestamp < market.cutoff_time,
-            PicksError::TradingClosed
-        );
-        require!(
-            market.final_outcome == Outcome::Pending as u8,
+            final_outcome == Outcome::Pending as u8,
             PicksError::AlreadyResolved
         );
 
         let net = pay_fees_and_get_net(
             amount,
-            market,
+            fee_bps,
+            fee_recipient_pk,
+            creator_fee_recipient_pk,
+            creator_fee_split_bps,
             &ctx.accounts.user.to_account_info(),
             &ctx.accounts.fee_recipient,
             &ctx.accounts.creator_fee_recipient,
             &ctx.accounts.system_program,
         )?;
 
-        // Net lamports to vault
+        // Net lamports into vault PDA
         invoke(
             &system_instruction::transfer(
                 ctx.accounts.user.key,
@@ -135,29 +182,27 @@ pub mod picks_market {
             ],
         )?;
 
+        // Mint YES shares — Market PDA is the mint authority
+        let signer_seeds: &[&[&[u8]]] = &[&[MARKET_SEED, market_id.as_ref(), &[market_bump]]];
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            MintTo {
+                mint: ctx.accounts.yes_mint.to_account_info(),
+                to: ctx.accounts.user_yes_ata.to_account_info(),
+                authority: ctx.accounts.market.to_account_info(),
+            },
+            signer_seeds,
+        );
+        token_2022::mint_to(cpi_ctx, net)?;
+
+        let market = &mut ctx.accounts.market;
         market.vault_yes = market
             .vault_yes
             .checked_add(net)
             .ok_or(PicksError::MathOverflow)?;
 
-        // Mint YES shares (1 share = 1 lamport of net)
-        let market_id = market.market_id;
-        let market_bump = market.bump;
-        let signer_seeds: &[&[&[u8]]] = &[&[MARKET_SEED, market_id.as_ref(), &[market_bump]]];
-        let cpi_accounts = MintTo {
-            mint: ctx.accounts.yes_mint.to_account_info(),
-            to: ctx.accounts.user_yes_ata.to_account_info(),
-            authority: ctx.accounts.market.to_account_info(),
-        };
-        let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            cpi_accounts,
-            signer_seeds,
-        );
-        token_2022::mint_to(cpi_ctx, net)?;
-
         emit!(Bought {
-            market: market.key(),
+            market: market_key,
             user: ctx.accounts.user.key(),
             is_yes: true,
             amount_in: amount,
@@ -169,20 +214,44 @@ pub mod picks_market {
 
     pub fn buy_no(ctx: Context<BuyNo>, amount: u64) -> Result<()> {
         let clock = Clock::get()?;
-        let market = &mut ctx.accounts.market;
+        let (
+            cutoff_time,
+            final_outcome,
+            fee_bps,
+            fee_recipient_pk,
+            creator_fee_recipient_pk,
+            creator_fee_split_bps,
+            market_bump,
+            market_id,
+            market_key,
+        ) = {
+            let m = &ctx.accounts.market;
+            (
+                m.cutoff_time,
+                m.final_outcome,
+                m.fee_bps,
+                m.fee_recipient,
+                m.creator_fee_recipient,
+                m.creator_fee_split_bps,
+                m.bump,
+                m.market_id,
+                m.key(),
+            )
+        };
+
         require!(amount > 0, PicksError::ZeroAmount);
+        require!(clock.unix_timestamp < cutoff_time, PicksError::TradingClosed);
         require!(
-            clock.unix_timestamp < market.cutoff_time,
-            PicksError::TradingClosed
-        );
-        require!(
-            market.final_outcome == Outcome::Pending as u8,
+            final_outcome == Outcome::Pending as u8,
             PicksError::AlreadyResolved
         );
 
         let net = pay_fees_and_get_net(
             amount,
-            market,
+            fee_bps,
+            fee_recipient_pk,
+            creator_fee_recipient_pk,
+            creator_fee_split_bps,
             &ctx.accounts.user.to_account_info(),
             &ctx.accounts.fee_recipient,
             &ctx.accounts.creator_fee_recipient,
@@ -202,28 +271,26 @@ pub mod picks_market {
             ],
         )?;
 
+        let signer_seeds: &[&[&[u8]]] = &[&[MARKET_SEED, market_id.as_ref(), &[market_bump]]];
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            MintTo {
+                mint: ctx.accounts.no_mint.to_account_info(),
+                to: ctx.accounts.user_no_ata.to_account_info(),
+                authority: ctx.accounts.market.to_account_info(),
+            },
+            signer_seeds,
+        );
+        token_2022::mint_to(cpi_ctx, net)?;
+
+        let market = &mut ctx.accounts.market;
         market.vault_no = market
             .vault_no
             .checked_add(net)
             .ok_or(PicksError::MathOverflow)?;
 
-        let market_id = market.market_id;
-        let market_bump = market.bump;
-        let signer_seeds: &[&[&[u8]]] = &[&[MARKET_SEED, market_id.as_ref(), &[market_bump]]];
-        let cpi_accounts = MintTo {
-            mint: ctx.accounts.no_mint.to_account_info(),
-            to: ctx.accounts.user_no_ata.to_account_info(),
-            authority: ctx.accounts.market.to_account_info(),
-        };
-        let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            cpi_accounts,
-            signer_seeds,
-        );
-        token_2022::mint_to(cpi_ctx, net)?;
-
         emit!(Bought {
-            market: market.key(),
+            market: market_key,
             user: ctx.accounts.user.key(),
             is_yes: false,
             amount_in: amount,
@@ -242,37 +309,153 @@ pub mod picks_market {
     }
 
     pub fn claim(ctx: Context<Claim>) -> Result<()> {
-        _claim(ctx, false)
-    }
+        let (final_outcome, market_key) = {
+            let m = &ctx.accounts.market;
+            (m.final_outcome, m.key())
+        };
+        require!(
+            final_outcome != Outcome::Pending as u8,
+            PicksError::NotResolved
+        );
 
-    pub fn claim_for(ctx: Context<Claim>) -> Result<()> {
-        _claim(ctx, true)
+        // Invalid → refund both legs 1:1
+        if final_outcome == Outcome::Invalid as u8 {
+            let a = ctx.accounts.user_yes_ata.amount;
+            let b = ctx.accounts.user_no_ata.amount;
+            let refund = a.checked_add(b).ok_or(PicksError::MathOverflow)?;
+
+            if a > 0 {
+                burn_shares(
+                    &ctx.accounts.token_program,
+                    &ctx.accounts.yes_mint.to_account_info(),
+                    &ctx.accounts.user_yes_ata.to_account_info(),
+                    &ctx.accounts.user.to_account_info(),
+                    a,
+                )?;
+            }
+            if b > 0 {
+                burn_shares(
+                    &ctx.accounts.token_program,
+                    &ctx.accounts.no_mint.to_account_info(),
+                    &ctx.accounts.user_no_ata.to_account_info(),
+                    &ctx.accounts.user.to_account_info(),
+                    b,
+                )?;
+            }
+            if refund > 0 {
+                pda_vault_pay(
+                    &ctx.accounts.vault.to_account_info(),
+                    &ctx.accounts.user.to_account_info(),
+                    refund,
+                )?;
+            }
+
+            emit!(Claimed {
+                market: market_key,
+                user: ctx.accounts.user.key(),
+                burned_shares: refund,
+                paid_out: refund,
+            });
+            return Ok(());
+        }
+
+        // Winner path
+        let yes_won = final_outcome == Outcome::Yes as u8;
+        let user_win_shares = if yes_won {
+            ctx.accounts.user_yes_ata.amount
+        } else {
+            ctx.accounts.user_no_ata.amount
+        };
+        require!(user_win_shares > 0, PicksError::NoShares);
+
+        let shares_before = ctx.accounts.market.winning_shares_remaining;
+        require!(shares_before > 0, PicksError::SharesExhausted);
+
+        if yes_won {
+            burn_shares(
+                &ctx.accounts.token_program,
+                &ctx.accounts.yes_mint.to_account_info(),
+                &ctx.accounts.user_yes_ata.to_account_info(),
+                &ctx.accounts.user.to_account_info(),
+                user_win_shares,
+            )?;
+        } else {
+            burn_shares(
+                &ctx.accounts.token_program,
+                &ctx.accounts.no_mint.to_account_info(),
+                &ctx.accounts.user_no_ata.to_account_info(),
+                &ctx.accounts.user.to_account_info(),
+                user_win_shares,
+            )?;
+        }
+
+        let remaining_pot = ctx.accounts.market.remaining_pot;
+        let payout: u64 = if user_win_shares == shares_before {
+            // Last claimer — sweep remainder, no rounding loss
+            remaining_pot
+        } else {
+            ((remaining_pot as u128) * (user_win_shares as u128) / (shares_before as u128)) as u64
+        };
+
+        if payout > 0 {
+            pda_vault_pay(
+                &ctx.accounts.vault.to_account_info(),
+                &ctx.accounts.user.to_account_info(),
+                payout,
+            )?;
+        }
+
+        let market = &mut ctx.accounts.market;
+        if user_win_shares == shares_before {
+            market.remaining_pot = 0;
+            market.winning_shares_remaining = 0;
+        } else {
+            market.remaining_pot = market
+                .remaining_pot
+                .checked_sub(payout)
+                .ok_or(PicksError::MathOverflow)?;
+            market.winning_shares_remaining = shares_before
+                .checked_sub(user_win_shares)
+                .ok_or(PicksError::MathOverflow)?;
+        }
+
+        emit!(Claimed {
+            market: market_key,
+            user: ctx.accounts.user.key(),
+            burned_shares: user_win_shares,
+            paid_out: payout,
+        });
+        Ok(())
     }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Resolution + claim helpers
+// Resolution helper
 // ──────────────────────────────────────────────────────────────────────────────
 
 fn _resolve(ctx: Context<Resolve>, outcome: Outcome, force: bool) -> Result<()> {
-    let market = &mut ctx.accounts.market;
+    let (current_outcome, owner_pk, end_time, vault_yes, vault_no, market_key) = {
+        let m = &ctx.accounts.market;
+        (m.final_outcome, m.owner, m.end_time, m.vault_yes, m.vault_no, m.key())
+    };
     require!(
-        market.final_outcome == Outcome::Pending as u8,
+        current_outcome == Outcome::Pending as u8,
         PicksError::AlreadyResolved
     );
-    require!(
-        ctx.accounts.owner.key() == market.owner,
-        PicksError::NotOwner
-    );
+    require!(ctx.accounts.owner.key() == owner_pk, PicksError::NotOwner);
     if !force {
         let clock = Clock::get()?;
-        require!(clock.unix_timestamp >= market.end_time, PicksError::NotEnded);
+        require!(clock.unix_timestamp >= end_time, PicksError::NotEnded);
     }
     require!(
         matches!(outcome, Outcome::Yes | Outcome::No | Outcome::Invalid),
         PicksError::BadOutcome
     );
 
+    let yes_supply = ctx.accounts.yes_mint.supply;
+    let no_supply = ctx.accounts.no_mint.supply;
+
+    let market = &mut ctx.accounts.market;
     market.final_outcome = outcome as u8;
 
     if matches!(outcome, Outcome::Invalid) {
@@ -280,164 +463,22 @@ fn _resolve(ctx: Context<Resolve>, outcome: Outcome, force: bool) -> Result<()> 
         market.remaining_pot = 0;
         market.winning_shares_remaining = 0;
     } else {
-        let pot = market
-            .vault_yes
-            .checked_add(market.vault_no)
+        let pot = vault_yes
+            .checked_add(vault_no)
             .ok_or(PicksError::MathOverflow)?;
         market.resolved_pot = pot;
         market.remaining_pot = pot;
-        // Winning side's total supply (Token-2022 Mint.supply)
-        let winning_mint_ai = if matches!(outcome, Outcome::Yes) {
-            ctx.accounts.yes_mint.to_account_info()
+        market.winning_shares_remaining = if matches!(outcome, Outcome::Yes) {
+            yes_supply
         } else {
-            ctx.accounts.no_mint.to_account_info()
+            no_supply
         };
-        let mint_data = winning_mint_ai.data.borrow();
-        // The base Mint state is the first 82 bytes (spl_token::state::Mint layout);
-        // Token-2022 mints with extensions still keep the base layout at the start.
-        let base = MintState::unpack_from_slice(&mint_data[..MintState::LEN])?;
-        market.winning_shares_remaining = base.supply;
     }
 
     emit!(Resolved {
-        market: market.key(),
+        market: market_key,
         outcome: outcome as u8,
         forced: force,
-    });
-    Ok(())
-}
-
-fn _claim(ctx: Context<Claim>, is_claim_for: bool) -> Result<()> {
-    let market = &mut ctx.accounts.market;
-    require!(
-        market.final_outcome != Outcome::Pending as u8,
-        PicksError::NotResolved
-    );
-
-    // claim_for => signer must be market.owner; user can be anyone
-    // claim     => signer == user
-    let user_key = ctx.accounts.user.key();
-    if is_claim_for {
-        require!(
-            ctx.accounts.signer.key() == market.owner,
-            PicksError::NotOwner
-        );
-    } else {
-        require!(
-            ctx.accounts.signer.key() == user_key,
-            PicksError::NotOwner
-        );
-    }
-
-    let outcome = market.final_outcome;
-    let market_key = market.key();
-    let vault_bump = market.vault_bump;
-    let market_id = market.market_id;
-    let market_bump = market.bump;
-
-    if outcome == Outcome::Invalid as u8 {
-        // Refund both legs 1:1
-        let a = ctx.accounts.user_yes_ata.amount;
-        let b = ctx.accounts.user_no_ata.amount;
-        let refund = a.checked_add(b).ok_or(PicksError::MathOverflow)?;
-
-        if a > 0 {
-            burn_shares(
-                &ctx.accounts.token_program,
-                &ctx.accounts.yes_mint.to_account_info(),
-                &ctx.accounts.user_yes_ata.to_account_info(),
-                &ctx.accounts.user.to_account_info(),
-                a,
-            )?;
-        }
-        if b > 0 {
-            burn_shares(
-                &ctx.accounts.token_program,
-                &ctx.accounts.no_mint.to_account_info(),
-                &ctx.accounts.user_no_ata.to_account_info(),
-                &ctx.accounts.user.to_account_info(),
-                b,
-            )?;
-        }
-        if refund > 0 {
-            pda_vault_pay(
-                &ctx.accounts.vault.to_account_info(),
-                &ctx.accounts.user.to_account_info(),
-                refund,
-            )?;
-        }
-
-        emit!(Claimed {
-            market: market_key,
-            user: user_key,
-            burned_shares: refund,
-            paid_out: refund,
-        });
-        return Ok(());
-    }
-
-    let yes_won = outcome == Outcome::Yes as u8;
-    let (win_mint_ai, user_win_ata_ai, user_win_shares) = if yes_won {
-        (
-            ctx.accounts.yes_mint.to_account_info(),
-            ctx.accounts.user_yes_ata.to_account_info(),
-            ctx.accounts.user_yes_ata.amount,
-        )
-    } else {
-        (
-            ctx.accounts.no_mint.to_account_info(),
-            ctx.accounts.user_no_ata.to_account_info(),
-            ctx.accounts.user_no_ata.amount,
-        )
-    };
-    require!(user_win_shares > 0, PicksError::NoShares);
-
-    let shares_before = market.winning_shares_remaining;
-    require!(shares_before > 0, PicksError::SharesExhausted);
-
-    burn_shares(
-        &ctx.accounts.token_program,
-        &win_mint_ai,
-        &user_win_ata_ai,
-        &ctx.accounts.user.to_account_info(),
-        user_win_shares,
-    )?;
-
-    let payout: u64 = if user_win_shares == shares_before {
-        // Last claimer — sweep the remainder to avoid rounding loss
-        let p = market.remaining_pot;
-        market.remaining_pot = 0;
-        market.winning_shares_remaining = 0;
-        p
-    } else {
-        let p: u64 = ((market.remaining_pot as u128) * (user_win_shares as u128)
-            / (shares_before as u128)) as u64;
-        market.remaining_pot = market
-            .remaining_pot
-            .checked_sub(p)
-            .ok_or(PicksError::MathOverflow)?;
-        market.winning_shares_remaining = shares_before
-            .checked_sub(user_win_shares)
-            .ok_or(PicksError::MathOverflow)?;
-        p
-    };
-
-    if payout > 0 {
-        pda_vault_pay(
-            &ctx.accounts.vault.to_account_info(),
-            &ctx.accounts.user.to_account_info(),
-            payout,
-        )?;
-    }
-
-    // suppress unused warnings for seeds (kept here for future signed CPIs)
-    let _ = (vault_bump, market_id, market_bump, market_key);
-
-    emit!(Claimed {
-        market: market.key(),
-        user: user_key,
-        burned_shares: user_win_shares,
-        paid_out: payout,
     });
     Ok(())
 }
@@ -448,27 +489,30 @@ fn _claim(ctx: Context<Claim>, is_claim_for: bool) -> Result<()> {
 
 fn pay_fees_and_get_net<'info>(
     amount: u64,
-    market: &Account<'info, Market>,
+    fee_bps: u16,
+    fee_recipient_pk: Pubkey,
+    creator_fee_recipient_pk: Pubkey,
+    creator_fee_split_bps: u16,
     user: &AccountInfo<'info>,
     fee_recipient: &AccountInfo<'info>,
     creator_fee_recipient: &AccountInfo<'info>,
     system_program: &Program<'info, System>,
 ) -> Result<u64> {
-    let fee: u64 = ((amount as u128) * (market.fee_bps as u128) / 10_000) as u64;
+    let fee: u64 = ((amount as u128) * (fee_bps as u128) / 10_000) as u64;
     let net = amount.checked_sub(fee).ok_or(PicksError::MathOverflow)?;
 
     if fee == 0 {
         return Ok(net);
     }
 
-    let has_creator = market.creator_fee_recipient != Pubkey::default()
-        && market.creator_fee_split_bps > 0;
+    let has_creator =
+        creator_fee_recipient_pk != Pubkey::default() && creator_fee_split_bps > 0;
 
     if has_creator {
         // Solidity semantic: creator_fee_split_bps is bps of GROSS trade (not of fee),
         // capped at the total fee. Keep this exact behavior.
         let mut creator_cut: u64 =
-            ((amount as u128) * (market.creator_fee_split_bps as u128) / 10_000) as u64;
+            ((amount as u128) * (creator_fee_split_bps as u128) / 10_000) as u64;
         if creator_cut > fee {
             creator_cut = fee;
         }
@@ -477,7 +521,7 @@ fn pay_fees_and_get_net<'info>(
         if creator_cut > 0 {
             require_keys_eq!(
                 creator_fee_recipient.key(),
-                market.creator_fee_recipient,
+                creator_fee_recipient_pk,
                 PicksError::WrongCreatorFeeRecipient
             );
             sys_transfer(user, creator_fee_recipient, system_program, creator_cut)?;
@@ -485,7 +529,7 @@ fn pay_fees_and_get_net<'info>(
         if platform_cut > 0 {
             require_keys_eq!(
                 fee_recipient.key(),
-                market.fee_recipient,
+                fee_recipient_pk,
                 PicksError::WrongFeeRecipient
             );
             sys_transfer(user, fee_recipient, system_program, platform_cut)?;
@@ -493,7 +537,7 @@ fn pay_fees_and_get_net<'info>(
     } else {
         require_keys_eq!(
             fee_recipient.key(),
-            market.fee_recipient,
+            fee_recipient_pk,
             PicksError::WrongFeeRecipient
         );
         sys_transfer(user, fee_recipient, system_program, fee)?;
@@ -520,8 +564,8 @@ fn pda_vault_pay<'info>(
     to: &AccountInfo<'info>,
     lamports: u64,
 ) -> Result<()> {
-    // Vault PDA is a system-owned account holding lamports for the program;
-    // direct lamport reassignment is the standard pattern for PDA outflows.
+    // Vault PDA is a system-owned account holding lamports for the program.
+    // Direct lamport reassignment is the standard pattern for PDA outflows.
     let mut vault_lamports = vault.try_borrow_mut_lamports()?;
     let mut to_lamports = to.try_borrow_mut_lamports()?;
     **vault_lamports = vault_lamports
@@ -557,15 +601,10 @@ fn init_nontransferable_mint<'info>(
     mint: &AccountInfo<'info>,
     mint_authority: &AccountInfo<'info>,
     token_program: &Program<'info, Token2022>,
-    _rent: &Sysvar<'info, Rent>,
 ) -> Result<()> {
-    // Account was created with the correct size in #[derive(Accounts)]; we just
-    // need to wire the NonTransferable extension and then initialize the base mint.
-
-    let nt_ix = token_2022_ix::initialize_non_transferable_mint(
-        token_program.key,
-        mint.key,
-    )?;
+    // Account was created with the correct size and owner via #[derive(Accounts)].
+    // Order matters: NonTransferable extension MUST be initialized before InitializeMint2.
+    let nt_ix = token_2022_ix::initialize_non_transferable_mint(token_program.key, mint.key)?;
     invoke(&nt_ix, &[mint.clone(), token_program.to_account_info()])?;
 
     let init_ix = token_2022_ix::initialize_mint2(
@@ -597,11 +636,9 @@ pub struct InitializeMarket<'info> {
         seeds = [MARKET_SEED, args.market_id.as_ref()],
         bump,
     )]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
 
-    /// Vault PDA — system-owned account holding pooled SOL.
-    /// We create it as a zero-data PDA via `init` so it has a valid owner (system program)
-    /// and can receive lamports via system_program::transfer.
+    /// Vault PDA — zero-data system account holding pooled SOL.
     #[account(
         init,
         payer = owner,
@@ -613,13 +650,27 @@ pub struct InitializeMarket<'info> {
     /// CHECK: zero-data PDA used only as a lamport sink
     pub vault: AccountInfo<'info>,
 
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeShareMints<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [MARKET_SEED, market.market_id.as_ref()],
+        bump = market.bump,
+        constraint = market.owner == owner.key() @ PicksError::NotOwner,
+    )]
+    pub market: Box<Account<'info, Market>>,
+
     /// YES mint — Token-2022, NonTransferable, mint authority = Market PDA
     #[account(
         init,
         payer = owner,
-        space = ExtensionType::try_calculate_account_len::<MintState>(
-            &[ExtensionType::NonTransferable]
-        ).unwrap(),
+        space = MINT_SPACE,
         seeds = [YES_MINT_SEED, market.key().as_ref()],
         bump,
         owner = token_2022::ID,
@@ -630,9 +681,7 @@ pub struct InitializeMarket<'info> {
     #[account(
         init,
         payer = owner,
-        space = ExtensionType::try_calculate_account_len::<MintState>(
-            &[ExtensionType::NonTransferable]
-        ).unwrap(),
+        space = MINT_SPACE,
         seeds = [NO_MINT_SEED, market.key().as_ref()],
         bump,
         owner = token_2022::ID,
@@ -642,7 +691,6 @@ pub struct InitializeMarket<'info> {
 
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token2022>,
-    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -778,15 +826,9 @@ pub struct Resolve<'info> {
 
 #[derive(Accounts)]
 pub struct Claim<'info> {
-    /// For `claim`, this is the user themselves. For `claim_for`, this is the owner.
+    /// The shareholder. Must sign — Token-2022 burns require the ATA owner's signature.
     #[account(mut)]
-    pub signer: Signer<'info>,
-
-    /// The user whose shares are being burned and to whom the payout is sent.
-    /// For `claim`, must equal signer; for `claim_for`, can be anyone.
-    #[account(mut)]
-    /// CHECK: address relationship validated in handler
-    pub user: AccountInfo<'info>,
+    pub user: Signer<'info>,
 
     #[account(
         mut,
@@ -863,10 +905,11 @@ pub struct Market {
     pub resolved_pot: u64,
     pub remaining_pot: u64,
     pub winning_shares_remaining: u64,
+    pub mints_ready: bool,
 }
 
 impl Market {
-    // 1+1+1+1+32+32+32+2+32+2+8+8+8+8+1+8+8+8 = 191. Round up for headroom.
+    // 1+1+1+1+32+32+32+2+32+2+8+8+8+8+1+8+8+8+1 = 192. Round up for headroom.
     pub const SIZE: usize = 256;
 }
 
@@ -968,4 +1011,8 @@ pub enum PicksError {
     WrongFeeRecipient,
     #[msg("creator_fee_recipient account does not match market.creator_fee_recipient")]
     WrongCreatorFeeRecipient,
+    #[msg("share mints already initialized")]
+    MintsAlreadyReady,
+    #[msg("share mints not yet initialized; call initialize_share_mints")]
+    MintsNotReady,
 }
