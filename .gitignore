@@ -3,3 +3,8 @@ artifacts/
 cache/
 .env
 
+# Anchor / Solana
+target/
+.anchor/
+test-ledger/
+**/*.rs.bk
