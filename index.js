@@ -172,6 +172,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (parsed.pathname === '/api/deploy-check') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      marker: 'pb-deploy-check-9f4a3c2e7b1d',
+      committedAt: '2026-05-19T03:05:00Z',
+      note: 'Added to verify Railway CI/CD pipeline is wired up.',
+      uptimeSec: Math.floor(process.uptime()),
+      now: new Date().toISOString(),
+    }));
+    return;
+  }
+
   // Auth endpoints for MetaMask sign-in
   if (parsed.pathname === '/auth-nonce') {
     if (req.method !== 'GET') {
