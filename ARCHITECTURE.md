@@ -1,12 +1,46 @@
 # picksbackend — architecture
 
 This repo is the backend home for **picks.run** prediction markets. It contains
-the on-chain code for both supported chains (BNB and Solana) plus the Railway
-service that the frontend / Supabase edge functions call to spin up new markets.
+the on-chain Solana program plus legacy BNB contracts (deprecated).
+
+**Solana is the only supported chain as of 2026-05-18. BNB is deprecated.**
 
 There is one source of truth in this codebase. There used to be a tangle of
 sibling repos (`inkwell-backend`, `one-truth-launch`, scratch dirs) — those are
 not authoritative. **picksbackend = the backend.**
+
+---
+
+## ⚠️ CRITICAL: Solana Program ID
+
+**Current deployed program:** `3CioMvyUg4koYTYhPVk1CjkTFnS6QNgH1vyhyNxN2xtY`
+
+### Program ID History
+
+| Program ID | Status | What it was |
+|------------|--------|-------------|
+| `3CioMvyUg4koYTYhPVk1CjkTFnS6QNgH1vyhyNxN2xtY` | ✅ **CURRENT** | BNB-mirror YES/NO market (Token-2022 shares) |
+| `4q4XQMgSgjpSuWKw4QPbSEZE7iKn2qAhjfGyMY7fZvKT` | ❌ **DEPRECATED** | Old program, do NOT use |
+
+### Where the program ID must match
+
+All of these MUST use `3CioMvyUg4koYTYhPVk1CjkTFnS6QNgH1vyhyNxN2xtY`:
+
+| Location | File | Status |
+|----------|------|--------|
+| **This repo** | `programs/picks_market/src/lib.rs` (`declare_id!`) | ✅ Source of truth |
+| **This repo** | `Anchor.toml` | ✅ Correct |
+| **Frontend** | `SolPicks/src/lib/picksMarket.js` | ✅ Updated |
+| **Frontend** | `SolPicks/src/lib/picks_market_idl.json` | ✅ Updated |
+| **Frontend** | `SolPicks/.env.example` | ✅ Updated |
+| **Edge fn** | `over_under/supabase/functions/launch-sol-market/index.ts` | ⚠️ **NEEDS UPDATE** |
+
+### BNB is DEPRECATED
+
+Do not use BNB. All BNB code in this repo is legacy:
+- `contracts/prediction/*.sol` — not deployed for new picks
+- `scripts/deploy-market.js` — not called for new picks
+- Railway `/api/launch-evm-market` — legacy endpoint
 
 ---
 
@@ -95,15 +129,18 @@ on this machine today.
 
 ---
 
-## The BNB side (still in production)
+## The BNB side (⚠️ DEPRECATED)
 
-### What it does
+**DO NOT USE.** BNB support is deprecated as of 2026-05-18. This section is
+kept for reference only. All new picks use Solana.
+
+### What it did (legacy)
 
 Same logic as the Solana program, but on BNB mainnet using Solidity contracts.
-Each pick deploys its own `PredictionMarketNative` vault + two `OutcomeShare`
-tokens (YES and NO). Resolution is owner-only. Claim is pro-rata.
+Each pick deployed its own `PredictionMarketNative` vault + two `OutcomeShare`
+tokens (YES and NO). Resolution was owner-only. Claim was pro-rata.
 
-### Production flow
+### Legacy production flow (no longer used)
 
 ```
 Frontend (picks.run)
@@ -124,7 +161,7 @@ Supabase row updated with market + share token addresses
 post-to-x edge function publishes the X poll
 ```
 
-### Deployment
+### Railway service (still running for legacy ops)
 
 - **Service:** `picksbackend-production.up.railway.app`
 - **Auto-deploys** on push to `jameswalter4566/picksbackend` main.
@@ -133,24 +170,24 @@ post-to-x edge function publishes the X poll
 
 Operational scripts (`resolve-market.js`, `claim-market.js`, `manual-refund.js`)
 are run by exec'ing into the Railway container with the production secrets
-already loaded.
+already loaded. These may still be needed for legacy BNB markets that need
+resolution.
 
 ---
 
-## How the two chains relate
+## Active chain: Solana only
 
-They're **parallel implementations of the same market design**, picked per
-pick based on `picks.market_type` in Supabase:
+**All new picks use Solana.** BNB is deprecated.
 
-- `evm` / `native_bnb` markets → BNB contracts deployed by this repo's
-  Hardhat scripts via the Railway service.
 - `sol` markets → calls to the Anchor program deployed at
   `3CioMvyUg4koYTYhPVk1CjkTFnS6QNgH1vyhyNxN2xtY` on devnet (mainnet TBD).
 
-The frontend (`SolPicks` repo) renders the right trade panel
-(`EvmTradePanel` or `SolMarketTradePanel`) and routes user actions to the
-correct chain. The Supabase edge functions (`launch-evm-market`,
-`launch-sol-market`) act as the single shared dispatcher.
+The frontend (`SolPicks` repo) uses `SolMarketTradePanel` for trading.
+The Supabase edge function `launch-sol-market` handles market creation.
+
+Legacy `evm` / `native_bnb` markets may still exist in the database from
+before the migration. These can still be resolved/claimed using the Railway
+ops scripts, but no new BNB markets should be created.
 
 ---
 
