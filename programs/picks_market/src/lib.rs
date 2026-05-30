@@ -13,7 +13,7 @@
 //                         payout from combined vault (last claimer takes remainder)
 
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::program::invoke;
+use anchor_lang::solana_program::program::{invoke, invoke_signed};
 use anchor_lang::solana_program::system_instruction;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::token_2022::{
@@ -309,9 +309,9 @@ pub mod picks_market {
     }
 
     pub fn claim(ctx: Context<Claim>) -> Result<()> {
-        let (final_outcome, market_key) = {
+        let (final_outcome, market_key, vault_bump) = {
             let m = &ctx.accounts.market;
-            (m.final_outcome, m.key())
+            (m.final_outcome, m.key(), m.vault_bump)
         };
         require!(
             final_outcome != Outcome::Pending as u8,
@@ -346,6 +346,9 @@ pub mod picks_market {
                 pda_vault_pay(
                     &ctx.accounts.vault.to_account_info(),
                     &ctx.accounts.user.to_account_info(),
+                    &ctx.accounts.system_program.to_account_info(),
+                    &market_key,
+                    vault_bump,
                     refund,
                 )?;
             }
@@ -401,6 +404,9 @@ pub mod picks_market {
             pda_vault_pay(
                 &ctx.accounts.vault.to_account_info(),
                 &ctx.accounts.user.to_account_info(),
+                &ctx.accounts.system_program.to_account_info(),
+                &market_key,
+                vault_bump,
                 payout,
             )?;
         }
@@ -562,18 +568,26 @@ fn sys_transfer<'info>(
 fn pda_vault_pay<'info>(
     vault: &AccountInfo<'info>,
     to: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    market_key: &Pubkey,
+    vault_bump: u8,
     lamports: u64,
 ) -> Result<()> {
-    // Vault PDA is a system-owned account holding lamports for the program.
-    // Direct lamport reassignment is the standard pattern for PDA outflows.
-    let mut vault_lamports = vault.try_borrow_mut_lamports()?;
-    let mut to_lamports = to.try_borrow_mut_lamports()?;
-    **vault_lamports = vault_lamports
-        .checked_sub(lamports)
-        .ok_or(PicksError::VaultUnderflow)?;
-    **to_lamports = to_lamports
-        .checked_add(lamports)
-        .ok_or(PicksError::MathOverflow)?;
+    // Vault is a zero-data PDA owned by the system program (so `buy` can
+    // system_program::transfer INTO it). The runtime forbids debiting an
+    // account whose owner isn't your program via direct lamport mutation,
+    // so outflows MUST go through system_program::transfer signed by the
+    // vault PDA itself via invoke_signed with [VAULT_SEED, market_key].
+    // VaultUnderflow is no longer reachable here — the system program enforces
+    // sufficient balance — but the error code stays in the enum so existing
+    // IDL consumers don't break.
+    let market_key_bytes = market_key.as_ref();
+    let signer_seeds: &[&[&[u8]]] = &[&[VAULT_SEED, market_key_bytes, &[vault_bump]]];
+    invoke_signed(
+        &system_instruction::transfer(vault.key, to.key, lamports),
+        &[vault.clone(), to.clone(), system_program.clone()],
+        signer_seeds,
+    )?;
     Ok(())
 }
 
