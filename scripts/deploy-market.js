@@ -129,7 +129,7 @@ async function main() {
     } catch (err) {
       console.error('Prize transfer agent failed:', errorDetails(err));
       try {
-        await market.callStatic.setShareTransferAgent(prizeTransferAgent, true);
+        await market.setShareTransferAgent.staticCall(prizeTransferAgent, true);
       } catch (staticErr) {
         console.error('Prize transfer agent callStatic failed:', errorDetails(staticErr));
       }

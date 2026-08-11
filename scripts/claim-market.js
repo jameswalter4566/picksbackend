@@ -151,7 +151,7 @@ async function main() {
   if (claimWallet !== signerAddress) {
     try {
       try {
-        await market.callStatic.claimFor(claimWallet);
+        await market.claimFor.staticCall(claimWallet);
       } catch (staticErr) {
         console.error(JSON.stringify({
           success: false,
@@ -182,7 +182,7 @@ async function main() {
     }
   } else {
     try {
-      await market.callStatic.claim();
+      await market.claim.staticCall();
     } catch (staticErr) {
       console.error(JSON.stringify({
         success: false,
