@@ -13,6 +13,37 @@ const { createClient } = require('@supabase/supabase-js');
 const port = process.env.PORT || 3000;
 const CREATOR_FEE_SPLIT_BPS = 150;
 
+// Supported EVM chains for market deploy/resolve/claim. `evmChain` is the
+// value stored on picks.evm_chain and is what callers send back as `chain`.
+const EVM_CHAINS = {
+  bsc: {
+    key: 'bsc',
+    hardhatNetwork: 'bscMainnet',
+    evmChain: 'bsc-mainnet',
+    wrappedNative: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', // WBNB
+    marketType: 'native_bnb',
+    missingRpc: () => (process.env.ANKR_API_KEY || process.env.BSC_MAINNET_RPC) ? null : 'ANKR_API_KEY or BSC_MAINNET_RPC',
+  },
+  robinhood: {
+    key: 'robinhood',
+    hardhatNetwork: 'robinhoodMainnet',
+    evmChain: 'robinhood-mainnet',
+    wrappedNative: '0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73', // WETH9 on Robinhood Chain
+    marketType: 'native_eth',
+    // hardhat.config falls back to the public RPC; RH_RPC_URL (QuickNode) is
+    // still expected in production because the public endpoint rate-limits.
+    missingRpc: () => null,
+  },
+};
+
+function resolveEvmChain(raw) {
+  const key = (raw || '').toString().trim().toLowerCase();
+  if (['robinhood', 'robinhood-mainnet', 'robinhood_chain', 'robinhoodchain', 'rh'].includes(key)) {
+    return EVM_CHAINS.robinhood;
+  }
+  return EVM_CHAINS.bsc;
+}
+
 function parseCookies(req) {
   const header = req.headers['cookie'] || '';
   const out = {};
@@ -463,6 +494,7 @@ const server = http.createServer(async (req, res) => {
       let body = {};
       try { body = JSON.parse(bodyRaw || '{}'); } catch {}
       const namePrefix = (body.namePrefix || 'Example Pick').toString();
+      const chain = resolveEvmChain(body.chain);
       const feeBps = body.feeBps && Number.isFinite(Number(body.feeBps)) ? String(Number(body.feeBps)) : undefined;
       const asset = body.asset ? String(body.asset) : undefined;
       // endTime/cutoffTime are seconds
@@ -473,6 +505,7 @@ const server = http.createServer(async (req, res) => {
       if (feeBps) env.FEE_BPS = feeBps;
       env.MARKET_NATIVE = '1';
       env.ESCROW_ASSET = 'native';
+      env.WRAPPED_NATIVE = chain.wrappedNative;
       if (endTime) env.END_TIME = endTime;
       if (cutoffTime) env.CUTOFF_TIME = cutoffTime;
       const bodyCreator = normalizeAddress(body.creatorFeeRecipient || body.creator_wallet || body.creatorWallet);
@@ -484,7 +517,7 @@ const server = http.createServer(async (req, res) => {
       env.CREATOR_FEE_RECIPIENT = bodyCreator;
       env.CREATOR_FEE_SPLIT_BPS = String(CREATOR_FEE_SPLIT_BPS);
 
-      const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
+      const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', chain.hardhatNetwork], {
         cwd: __dirname,
         env,
       });
@@ -495,7 +528,8 @@ const server = http.createServer(async (req, res) => {
         try {
           const jsonStart = out.lastIndexOf('{');
           const json = JSON.parse(out.slice(jsonStart));
-          json.marketType = json.marketType || (json.asset === 'native' ? 'native_bnb' : 'erc20');
+          json.marketType = json.marketType || (json.asset === 'native' ? chain.marketType : 'erc20');
+          json.evmChain = chain.evmChain;
           res.writeHead(code === 0 ? 200 : 500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(json));
         } catch (e) {
@@ -524,9 +558,11 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'pickId and name are required' }));
         return;
       }
+      const chain = resolveEvmChain(body.chain);
       console.log('[launch-evm-market] request received', {
         pickId,
         namePrefix,
+        chain: chain.evmChain,
         bodyCreator: normalizeAddress(body.creatorFeeRecipient || body.creatorWallet || body.creator_wallet) ? 'provided' : 'missing',
       });
 
@@ -651,12 +687,14 @@ const server = http.createServer(async (req, res) => {
       if (Number.isFinite(Number(body.feeBps))) env.FEE_BPS = String(Number(body.feeBps));
       env.MARKET_NATIVE = '1';
       env.ESCROW_ASSET = 'native';
+      env.WRAPPED_NATIVE = chain.wrappedNative;
       const finalCreatorSplit = CREATOR_FEE_SPLIT_BPS;
       const finalCreatorWallet = creatorWallet;
       env.CREATOR_FEE_RECIPIENT = finalCreatorWallet;
       env.CREATOR_FEE_SPLIT_BPS = String(finalCreatorSplit);
       console.log('[launch-evm-market] prepared deployment env', {
         pickId,
+        chain: chain.evmChain,
         endTime,
         cutoffTime,
         creatorWallet: finalCreatorWallet,
@@ -676,11 +714,11 @@ const server = http.createServer(async (req, res) => {
       });
 
       console.log('[launch-evm-market] spawning deploy', {
-        cmd: 'npx hardhat run scripts/deploy-market.js --network bscMainnet',
+        cmd: `npx hardhat run scripts/deploy-market.js --network ${chain.hardhatNetwork}`,
         cwd: __dirname,
       });
 
-      const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', 'bscMainnet'], {
+      const child = spawn('npx', ['hardhat', 'run', 'scripts/deploy-market.js', '--network', chain.hardhatNetwork], {
         cwd: __dirname,
         env,
       });
@@ -707,7 +745,8 @@ const server = http.createServer(async (req, res) => {
             outTail: out.slice(-800),
           });
           const json = JSON.parse(out.slice(jsonStart));
-          json.marketType = json.marketType || (json.asset === 'native' ? 'native_bnb' : 'erc20');
+          json.marketType = json.marketType || (json.asset === 'native' ? chain.marketType : 'erc20');
+          json.evmChain = chain.evmChain;
           if (code !== 0 || !json?.success) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ success: false, error: 'deploy_failed', output: out.slice(-4000) }));
@@ -730,7 +769,7 @@ const server = http.createServer(async (req, res) => {
                 evm_market_address: json.marketAddress,
                 evm_yes_token_address: json.yesShareAddress,
                 evm_no_token_address: json.noShareAddress,
-                evm_chain: 'bsc-mainnet',
+                evm_chain: chain.evmChain,
                 evm_asset_address: json.asset,
                 evm_market_type: json.marketType,
                 evm_fee_bps: json.feeBps,
@@ -778,14 +817,16 @@ const server = http.createServer(async (req, res) => {
       const pickId = (body.pickId || body.id || '').toString().trim();
       const marketAddress = normalizeAddress(body.marketAddress || body.address);
       const resultRaw = (body.result || body.outcome || '').toString().trim().toLowerCase();
+      const chain = resolveEvmChain(body.chain);
       const allowedResults = new Set(['yes', 'no']);
       if (!marketAddress) { sendJson(res, 400, { error: 'marketAddress required' }); return; }
       if (!resultRaw || !allowedResults.has(resultRaw)) {
         sendJson(res, 400, { error: 'result must be "yes" or "no"' });
         return;
       }
-      if (!(process.env.ANKR_API_KEY || process.env.BSC_MAINNET_RPC)) {
-        sendJson(res, 500, { error: 'Missing RPC secret (ANKR_API_KEY or BSC_MAINNET_RPC)' });
+      const missingResolveRpc = chain.missingRpc();
+      if (missingResolveRpc) {
+        sendJson(res, 500, { error: `Missing RPC secret (${missingResolveRpc})` });
         return;
       }
       if (!process.env.DEPLOYER_PK) {
@@ -804,7 +845,7 @@ const server = http.createServer(async (req, res) => {
       };
       if (pickId) env.PICK_ID = pickId;
       if (shouldForce) env.RESOLVE_FORCE = '1';
-      const child = spawn('npx', ['hardhat', 'run', 'scripts/resolve-market.js', '--network', 'bscMainnet'], {
+      const child = spawn('npx', ['hardhat', 'run', 'scripts/resolve-market.js', '--network', chain.hardhatNetwork], {
         cwd: __dirname,
         env,
       });
@@ -850,11 +891,13 @@ const server = http.createServer(async (req, res) => {
       const pickId = (body.pickId || body.id || '').toString().trim();
       const marketAddress = normalizeAddress(body.marketAddress || body.address);
       const walletAddress = normalizeAddress(body.wallet || body.walletAddress || body.user);
-      console.info('[claim-market] request', { pickId, marketAddress, walletAddress });
+      const chain = resolveEvmChain(body.chain);
+      console.info('[claim-market] request', { pickId, marketAddress, walletAddress, chain: chain.evmChain });
       if (!marketAddress) { sendJson(res, 400, { error: 'marketAddress required' }); return; }
       if (!walletAddress) { sendJson(res, 400, { error: 'wallet required' }); return; }
-      if (!(process.env.ANKR_API_KEY || process.env.BSC_MAINNET_RPC)) {
-        sendJson(res, 500, { error: 'Missing RPC secret (ANKR_API_KEY or BSC_MAINNET_RPC)' });
+      const missingClaimRpc = chain.missingRpc();
+      if (missingClaimRpc) {
+        sendJson(res, 500, { error: `Missing RPC secret (${missingClaimRpc})` });
         return;
       }
       if (!process.env.DEPLOYER_PK) {
@@ -868,7 +911,7 @@ const server = http.createServer(async (req, res) => {
         CLAIM_WALLET: walletAddress,
       };
       if (pickId) env.PICK_ID = pickId;
-      const child = spawn('npx', ['hardhat', 'run', 'scripts/claim-market.js', '--network', 'bscMainnet'], {
+      const child = spawn('npx', ['hardhat', 'run', 'scripts/claim-market.js', '--network', chain.hardhatNetwork], {
         cwd: __dirname,
         env,
       });

@@ -28,8 +28,15 @@ async function main() {
   }
   const asset = 'native';
   const feeBps = Number(process.env.FEE_BPS || '300');
-  const DEFAULT_WRAPPED_NATIVE = '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c'; // WBNB mainnet
-  const wrappedNative = (process.env.WRAPPED_NATIVE || DEFAULT_WRAPPED_NATIVE).trim();
+  const network = await ethers.provider.getNetwork();
+  const chainId = Number(network.chainId);
+  // Per-chain defaults; the backend passes WRAPPED_NATIVE explicitly.
+  const CHAIN_DEFAULTS = {
+    56: { wrappedNative: '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', marketType: 'native_bnb', nativeSymbol: 'BNB' }, // WBNB mainnet
+    4663: { wrappedNative: '0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73', marketType: 'native_eth', nativeSymbol: 'ETH' }, // WETH9 on Robinhood Chain
+  };
+  const chainDefaults = CHAIN_DEFAULTS[chainId] || CHAIN_DEFAULTS[56];
+  const wrappedNative = (process.env.WRAPPED_NATIVE || chainDefaults.wrappedNative).trim();
   if (!wrappedNative || wrappedNative === ethers.ZeroAddress) {
     throw new Error('WRAPPED_NATIVE must be set to a valid token address.');
   }
@@ -53,7 +60,6 @@ async function main() {
   const owner        = process.env.RESOLVER || deployerAddr;
   const feeRecipient = process.env.FEE_RECIPIENT || deployerAddr;
 
-  const network = await ethers.provider.getNetwork();
   const feeData = await ethers.provider.getFeeData();
   const balance = await ethers.provider.getBalance(deployerAddr);
 
@@ -74,9 +80,9 @@ async function main() {
     maxFeePerGas: feeData.maxFeePerGas && feeData.maxFeePerGas.toString(),
     maxPriorityFeePerGas: feeData.maxPriorityFeePerGas && feeData.maxPriorityFeePerGas.toString(),
   });
-  console.log('Asset:', asset, '(native BNB)');
+  console.log('Asset:', asset, `(native ${chainDefaults.nativeSymbol})`);
   console.log('Fee bps:', feeBps);
-  console.log('Wrapped native:', wrappedNative, wrappedNative.toLowerCase() === DEFAULT_WRAPPED_NATIVE ? '(default WBNB)' : '');
+  console.log('Wrapped native:', wrappedNative, wrappedNative.toLowerCase() === chainDefaults.wrappedNative.toLowerCase() ? '(chain default)' : '');
   console.log('Creator fee recipient:', creatorFeeRecipient === ethers.ZeroAddress ? '(none)' : creatorFeeRecipient);
   console.log('Creator fee split bps:', creatorFeeSplitBps);
 
@@ -138,7 +144,8 @@ async function main() {
       owner,
       feeRecipient,
       asset,
-      marketType: 'native_bnb',
+      marketType: chainDefaults.marketType,
+      chainId,
       feeBps,
       endTime: Number(endTime),
       cutoffTime: Number(cutoffTime),
